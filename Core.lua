@@ -1,4 +1,4 @@
--- XenQuest 0.2.3-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
+-- XenQuest 0.2.5-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
 -- Never changes the quest log or uses protected quest actions automatically.
 local ADDON_NAME,addon = ...
 local QuestItems,ItemButtons=addon.QuestItems,addon.QuestItemButtons
@@ -105,6 +105,94 @@ local function formatStatus(o)
     if count and total and total>0 and count>=total then complete=true end
     return description,count,total,complete
 end
+-- Deliberately small, verified guidance map. Unknown objectives keep the game text;
+-- guessing enemy/drop associations would be misleading. More entries can be
+-- added safely as guide data is verified for the Forever client.
+local OBJECTIVE_HINTS = {
+    ["zenn's bidding"] = {
+        ["nightsaber fang"] = "Kill Nightsabers to collect Nightsaber Fangs",
+        ["strigid owl feather"] = "Kill Strigid Owls to collect Strigid Owl Feathers",
+        ["webwood spider silk"] = "Kill Webwood Spiders to collect Webwood Spider Silk",
+    },
+}
+local function objectiveDescription(quest,raw)
+    if type(raw)~="string" then return raw end
+    local hints=OBJECTIVE_HINTS[(quest.title or ""):lower()]
+    if not hints then return raw end
+    -- Quest objectives may include a trailing Blizzard progress counter.
+    local key=raw:lower():gsub("%s*:%s*%d+%s*/%s*%d+%s*$", "")
+    key=key:gsub("^%s+", ""):gsub("%s+$", "")
+    return hints[key] or raw
+end
+
+-- Objective presentation: distinguish measurable counters, profession training,
+-- and one-time actions. Do not treat an event-style 1/1 as measurable progress.
+local ONE_TIME_ACTIONS = {
+    "learn", "speak", "talk", "visit", "explore", "discover", "return",
+    "deliver", "meet", "find", "read", "interact", "listen", "report",
+}
+local function isOneTimeObjective(description,o,total)
+    if total ~= 1 then return false end
+    local lower=(description or ""):lower()
+    for _,verb in ipairs(ONE_TIME_ACTIONS) do
+        if lower:match("^%s*"..verb.."%f[%A]") then return true end
+    end
+    -- Blizzard's event/trigger objectives have no accumulating count.
+    local kind=tostring(o.type or o.objectiveType or ""):lower()
+    return kind=="event" or kind=="trigger"
+end
+local function professionSkillLevel(name)
+    local wanted=name:lower()
+    -- On clients exposing legacy skill lines, this also covers secondary skills.
+    if type(GetNumSkillLines)=="function" and type(GetSkillLineInfo)=="function" then
+        local n=safe(GetNumSkillLines)
+        if type(n)=="number" then
+            for i=1,n do
+                local skill,isHeader,_,rank=safe(GetSkillLineInfo,i)
+                if type(skill)=="string" and not isHeader and skill:lower()==wanted
+                    and type(rank)=="number" then
+                    return rank
+                end
+            end
+        end
+    end
+    -- Modern profession APIs may exist on supported Classic derivatives.
+    if type(GetProfessions)=="function" and type(GetProfessionInfo)=="function" then
+        local professions={safe(GetProfessions)}
+        for i=1,6 do
+            local id=professions[i]
+            if type(id)=="number" then
+                local skill,_,rank=safe(GetProfessionInfo,id)
+                if type(skill)=="string" and skill:lower()==wanted and type(rank)=="number" then
+                    return rank
+                end
+            end
+        end
+    end
+    return nil
+end
+local function objectivePresentation(o,description,count,total,done)
+    -- Parse only unambiguous skill targets: never fabricate the player's rank.
+    local normalized=(description or ""):lower():gsub("%s*:%s*%d+%s*/%s*%d+%s*$", "")
+    local skill,target=normalized:match("^%s*raise%s+your%s+([%a%s]+)%s+skill%s+to%s+(%d+)%s*%.?%s*$")
+    if skill and target then
+        skill=skill:match("^%s*(.-)%s*$")
+        target=tonumber(target)
+        if target and target>0 then
+            local rank=professionSkillLevel(skill)
+            if rank then
+                return rank,target,(rank>=target),true
+            end
+            -- No reliable skill API: show the objective, without fake 1/1.
+            return nil,nil,done,false
+        end
+    end
+    if isOneTimeObjective(description,o,total) then
+        return nil,nil,done,false
+    end
+    return count,total,done,(count~=nil and total~=nil and total>0)
+end
+
 local function questTitleFromLog(index)
     local name,level,tag,header,collapsed,complete,frequency,questID
     if C_QuestLog and C_QuestLog.GetInfo then
@@ -340,6 +428,12 @@ local function createRow(parent)
         if not row.quest or pressed~=row.quest.key or not titleCanNavigate(row) then return end
         if button=="RightButton" then row:GetScript("OnClick")(row,button);return end
         if IsShiftKeyDown and IsShiftKeyDown() then shareQuest(row.quest);return end
+        -- Completed quests can be expanded/collapsed with a normal title click.
+        -- Incomplete quest titles still open the quest log as before.
+        if row.quest.complete then
+            row:GetScript("OnClick")(row,"RightButton")
+            return
+        end
         local ok,message=BlizzardUI:OpenQuest(row.quest,questTitleFromLog)
         if not ok then print("|cffe8bb59XenQuest|r "..message) end
     end)
@@ -477,6 +571,8 @@ local function updateRow(row,q,width)
         for i,o in ipairs(q.objectives or {}) do
             if i>12 then break end
             local description,count,total,done=formatStatus(o)
+            local showBar
+            count,total,done,showBar=objectivePresentation(o,description,count,total,done)
             local w=objectiveWidget(row,i)
             w:ClearAllPoints()
             w:SetPoint("TOPLEFT",row,"TOPLEFT",26,-yy)
@@ -486,11 +582,11 @@ local function updateRow(row,q,width)
             w.amount.xqColor=done and COLORS.green or COLORS.muted
             applyFont(w.text,11)
             applyFont(w.amount,11)
-            local hasCount=(count~=nil and total~=nil and total>0)
+            local hasCount=showBar
             local countWidth=hasCount and 45 or 0
             w.text:SetWidth(widgetWidth-countWidth-5)
             w.amount:SetWidth(countWidth)
-            w.text:SetText(description)
+            w.text:SetText(objectiveDescription(q,description))
             w.amount:SetText(hasCount and (count.."/"..total) or (done and "Done" or ""))
             local textHeight=measuredHeight(w.text,14)
             if hasCount then
