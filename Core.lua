@@ -1,4 +1,4 @@
--- XenQuest 0.2.1-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
+-- XenQuest 0.2.2-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
 -- Never changes the quest log or uses protected quest actions automatically.
 local ADDON_NAME = ...
 local XQ = CreateFrame("Frame")
@@ -206,6 +206,38 @@ local function makeButton(parent,text,onClick)
     b:SetScript("OnClick",onClick)
     return b
 end
+-- Use the client's own super-tracking system so map/minimap navigation stays native.
+local function superTrackedQuest()
+    if C_SuperTrack and type(C_SuperTrack.GetSuperTrackedQuestID)=="function" then
+        return safe(C_SuperTrack.GetSuperTrackedQuestID)
+    end
+    if type(GetSuperTrackedQuestID)=="function" then
+        return safe(GetSuperTrackedQuestID)
+    end
+    return nil
+end
+local function setSuperTrackedQuest(questID)
+    if C_SuperTrack and type(C_SuperTrack.SetSuperTrackedQuestID)=="function" then
+        return pcall(C_SuperTrack.SetSuperTrackedQuestID,questID)
+    end
+    if type(SetSuperTrackedQuestID)=="function" then
+        return pcall(SetSuperTrackedQuestID,questID)
+    end
+    return false
+end
+local function markerTooltip(marker)
+    if not GameTooltip or not marker.quest then return end
+    GameTooltip:SetOwner(marker,"ANCHOR_LEFT")
+    local q=marker.quest
+    if not q.id or not ((C_SuperTrack and type(C_SuperTrack.SetSuperTrackedQuestID)=="function") or type(SetSuperTrackedQuestID)=="function") then
+        GameTooltip:SetText("Quest tracking unavailable on this client")
+    elseif superTrackedQuest()==q.id then
+        GameTooltip:SetText("Click to stop tracking")
+    else
+        GameTooltip:SetText("Click to track")
+    end
+    GameTooltip:Show()
+end
 local QUEST_RING="Interface\\AddOns\\XenQuest\\Media\\QuestRing"
 local SETTINGS_GEAR="Interface\\AddOns\\XenQuest\\Media\\SettingsGear"
 local function createRow(parent)
@@ -215,7 +247,7 @@ local function createRow(parent)
     row.head=fontString(row,13,COLORS.gold)
     row.head:SetPoint("TOPLEFT",26,-2)
     row.head:SetJustifyV("TOP")
-    row.bubble=CreateFrame("Frame",nil,row)
+    row.bubble=CreateFrame("Button",nil,row)
     row.bubble:SetSize(24,26)
     row.bubble:SetPoint("TOPLEFT",1,-1)
     row.bubble.glow=row.bubble:CreateTexture(nil,"BACKGROUND")
@@ -227,6 +259,20 @@ local function createRow(parent)
     row.bubble.ring:SetTexture(QUEST_RING)
     row.bubble.ring:SetAllPoints(row.bubble)
     row.bubble.ring:Hide()
+    row.bubble:EnableMouse(true)
+    row.bubble:RegisterForClicks("LeftButtonUp")
+    row.bubble:SetScript("OnEnter",function(self) markerTooltip(self) end)
+    row.bubble:SetScript("OnLeave",function(self) if GameTooltip then GameTooltip:Hide() end end)
+    row.bubble:SetScript("OnClick",function(self)
+        local q=self.quest
+        if not q or not q.id then return end
+        local target=(superTrackedQuest()==q.id) and 0 or q.id
+        if setSuperTrackedQuest(target) then
+            -- Update immediately; the event/periodic refresh also catches external changes.
+            dirty=true
+            markerTooltip(self)
+        end
+    end)
     row.symbol=fontString(row.bubble,20,COLORS.gold,"CENTER")
     row.symbol:ClearAllPoints()
     row.symbol:SetPoint("CENTER",row.bubble,"CENTER",0,0)
@@ -235,6 +281,14 @@ local function createRow(parent)
     row.symbol:SetJustifyH("CENTER")
     row.symbol:SetJustifyV("MIDDLE")
     row.symbol:SetText("!")
+    -- A second, slightly larger glyph gives a soft glow without adding a circle.
+    row.bubble.halo=fontString(row.bubble,22,COLORS.gold,"CENTER")
+    row.bubble.halo:SetDrawLayer("BACKGROUND")
+    row.bubble.halo:SetPoint("CENTER",row.bubble,"CENTER",0,0)
+    row.bubble.halo:SetSize(28,30)
+    row.bubble.halo:SetJustifyV("MIDDLE")
+    row.bubble.halo:SetAlpha(0.38)
+    row.bubble.halo:Hide()
     row.objectives={}
     row:SetScript("OnClick",function(self,btn)
         if IsShiftKeyDown and IsShiftKeyDown() and self.quest and self.quest.id then
@@ -279,14 +333,24 @@ local function measuredHeight(fontString,minimum)
 end
 local function updateRow(row,q,width)
     row.quest=q
+    row.bubble.quest=q
     local completed=q.complete
     local headingColor=completed and COLORS.green or COLORS.gold
     row.head.xqColor=headingColor
     row.symbol.xqColor=headingColor
     row.symbol:SetText(completed and "?" or "!")
     row.bubble.ring:Hide()
-    local selected=(q.id and db.primaryQuest==q.id) or (not q.id and db.primaryQuest==q.index)
-    row.bubble.glow:SetShown(false)
+    row.bubble.glow:Hide()
+    local activelyTracked=q.id and superTrackedQuest()==q.id
+    row.bubble.halo:SetShown(activelyTracked and true or false)
+    if activelyTracked then
+        row.bubble.halo:SetText(completed and "?" or "!")
+        row.bubble.halo.xqColor=headingColor
+        applyFont(row.bubble.halo,22,"OUTLINE")
+        row.bubble.halo:SetTextColor(headingColor[1],headingColor[2],headingColor[3])
+        row.bubble.halo:SetShadowColor(headingColor[1],headingColor[2],headingColor[3],0.85)
+        row.bubble.halo:SetShadowOffset(0,0)
+    end
     row.head:SetWidth(math.max(80,width-32))
     -- Subtle emphasis: standard Blizzard font with a light monochrome outline.
     applyFont(row.head,13,"OUTLINE")
@@ -674,6 +738,7 @@ XQ:RegisterEvent("ADDON_LOADED")
 XQ:RegisterEvent("PLAYER_ENTERING_WORLD")
 XQ:RegisterEvent("QUEST_LOG_UPDATE")
 XQ:RegisterEvent("QUEST_WATCH_UPDATE")
+XQ:RegisterEvent("SUPER_TRACKING_CHANGED")
 XQ:RegisterEvent("QUEST_ACCEPTED")
 XQ:RegisterEvent("QUEST_REMOVED")
 XQ:RegisterEvent("QUEST_TURNED_IN")
