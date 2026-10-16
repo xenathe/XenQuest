@@ -1,10 +1,11 @@
 ## Interface: 16001
 ## Title: XenQuest
-## Notes: A clean, standalone quest tracker with objective bars, custom fonts and transparency for WoW Forever beta.
+## Notes: Customisable quest tracker with smooth isometric navigation for WoW Forever.
 ## Author: XenQuest
-## Version: 0.2.5-beta
+## Version: 0.2.10-beta
 ## SavedVariables: XenQuestDB
 QuestItems.lua
 QuestItemButtons.lua
 BlizzardUI.lua
+Navigation.lua
 Core.lua

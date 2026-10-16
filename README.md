@@ -1,5 +1,11 @@
 # XenQuest
+
+Latest: **v0.2.9-beta — Discord Support & Settings Polish**. See [release notes](RELEASE_NOTES.md).
 A lightweight, customisable quest tracker for World of Warcraft.
+
+## Community & Support
+
+Join the [official XenQuest Discord](https://discord.gg/96UKh6AeAN) for help, bug reports, feature suggestions and release announcements. In-game, open `/xq` and select **Need help?** in Settings to copy the invite.
 
 ## 0.2.3-beta
 

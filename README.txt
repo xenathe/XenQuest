@@ -1,4 +1,4 @@
-XenQuest v0.2.3-beta - WoW Forever quest-tracker replacement
+XenQuest v0.2.9-beta - WoW Forever quest-tracker replacement
 ============================================================
 Install the entire XenQuest folder under Interface/AddOns, then restart WoW.
 
@@ -9,16 +9,6 @@ Install the entire XenQuest folder under Interface/AddOns, then restart WoW.
 /xq show          Show XenQuest
 /xq hide          Hide XenQuest
 
-## Community & Support
-
-Join the **[official XenQuest Discord](https://discord.gg/96UKh6AeAN)** for addon support, development updates and community discussions.
-
-- **Bug Reports:** Report issues and help us investigate them.
-- **Feature Suggestions:** Share ideas for future XenQuest updates.
-- **Help & Support:** Get assistance with installation, configuration and navigation.
-- **Release Notes:** Follow the latest addon improvements and fixes.
-
-We welcome community feedback as XenQuest continues to develop!
 Features
 - Incomplete quests first; Blizzard quest-log order is retained within each group.
 - New completions shimmer green, collapse and glide below incomplete quests.
@@ -53,3 +43,6 @@ Compatibility and limitations
 - The tracker uses Blizzard's native font files; no font files are bundled.
 - You can restore the original tracker by unchecking Hide Blizzard tracker.
 - Do not remove your SavedVariables file when updating.
+
+Official support: https://discord.gg/96UKh6AeAN
+Open /xq > Need help? to copy the Discord invite.

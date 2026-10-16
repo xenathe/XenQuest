@@ -1,4 +1,4 @@
--- XenQuest 0.2.5-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
+-- XenQuest 0.2.9-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
 -- Never changes the quest log or uses protected quest actions automatically.
 local ADDON_NAME,addon = ...
 local QuestItems,ItemButtons=addon.QuestItems,addon.QuestItemButtons
@@ -7,12 +7,20 @@ local XQ = CreateFrame("Frame")
 local db, tracker, settings, rows = nil, nil, nil, {}
 local dirty, elapsed = true, 0
 local renderedQuestIDs = {}
+-- Visible layout items interleave zone headers with their expanded quest rows.
+-- Zone expansion choices are session-only and reset when the player changes zones.
+local zoneLayoutItems, zoneHeaders, zoneOverrides = {}, {}, {}
+local lastPlayerZone, snapZoneLayout = nil, false
 -- Session-only state: saved manual collapse choices are never changed by completion.
 local questStates, spareRows, paintOrder = {}, {}, {}
 local completionSerial, layoutHeight = 0, 1
 local completionBaseline, worldReady = true, false
 local layoutRows, finishAnimations
 local SHIMMER_END, GLIDE_START, GLIDE_END, ANIMATION_END = 0.22, 0.40, 1.02, 1.26
+-- Widen only the LEFT edge of the tracker to keep the nav indicator
+-- inside the ScrollFrame's clipping area. The quest content is offset back
+-- by exactly the same amount; every existing !, title and objective stays put.
+local NAV_MARKER_GUTTER = 28
 
 local COLORS = {
     background={0.035,0.072,0.10}, surface={0.10,0.17,0.21}, edge={0.20,0.31,0.37},
@@ -30,6 +38,9 @@ local DEFAULTS = {
     x=-36,y=-175,scale=1,width=325,height=430,opacity=0,font=1,fontSize=12,
     trackedOnly=true,hideBlizzard=true,showHeader=true,locked=false,compact=false,
     theme="gold", primaryQuest=0, collapsed={}, minimized=false,showQuestItems=true,
+}
+local NAV_DEFAULTS = {
+    x=0,y=-110,scale=1,arrowSize=88,titleSize=13,distanceSize=11,
 }
 local function safe(fn,...)
     if type(fn)~="function" then return nil end
@@ -84,6 +95,58 @@ local function backing(parent,base)
     local tex=solid(parent,"BACKGROUND",base or COLORS.background)
     return tex
 end
+-- Small, client-independent rounded backgrounds for the settings UI only.
+-- A single 8x8 mask supplies the four 4px corners; the middle remains solid.
+-- Unlike masking or newer NineSlice APIs, this works with older WoW clients.
+local ROUNDED_CORNER = "Interface\\AddOns\\XenQuest\\Media\\RoundedCorner"
+local function roundedBacking(parent,base,radius,layer,opacity)
+    local r=radius or 4
+    local drawLayer=layer or "BACKGROUND"
+    local flats,corners={},{}
+    local function flat()
+        local t=parent:CreateTexture(nil,drawLayer)
+        flats[#flats+1]=t
+        return t
+    end
+    local middle=flat()
+    middle:SetPoint("TOPLEFT",parent,"TOPLEFT",0,-r)
+    middle:SetPoint("BOTTOMRIGHT",parent,"BOTTOMRIGHT",0,r)
+    local top=flat()
+    top:SetPoint("TOPLEFT",parent,"TOPLEFT",r,0)
+    top:SetPoint("TOPRIGHT",parent,"TOPRIGHT",-r,0)
+    top:SetHeight(r)
+    local bottom=flat()
+    bottom:SetPoint("BOTTOMLEFT",parent,"BOTTOMLEFT",r,0)
+    bottom:SetPoint("BOTTOMRIGHT",parent,"BOTTOMRIGHT",-r,0)
+    bottom:SetHeight(r)
+
+    -- Texture coordinates address the 4 quadrants of the one rounded mask.
+    local specs={
+        {"TOPLEFT",0,0.5,0,0.5},
+        {"TOPRIGHT",0.5,1,0,0.5},
+        {"BOTTOMLEFT",0,0.5,0.5,1},
+        {"BOTTOMRIGHT",0.5,1,0.5,1},
+    }
+    for _,spec in ipairs(specs) do
+        local t=parent:CreateTexture(nil,drawLayer)
+        t:SetTexture(ROUNDED_CORNER)
+        t:SetSize(r,r)
+        t:SetPoint(spec[1],parent,spec[1],0,0)
+        t:SetTexCoord(spec[2],spec[3],spec[4],spec[5])
+        corners[#corners+1]=t
+    end
+    -- Same colour interface as a Texture, so selected/inactive tab repainting
+    -- continues to use the existing paintTab() logic unchanged.
+    local surface={}
+    function surface:SetColorTexture(red,green,blue,alpha)
+        alpha=alpha or 1
+        for _,t in ipairs(flats) do t:SetColorTexture(red,green,blue,alpha) end
+        for _,t in ipairs(corners) do t:SetVertexColor(red,green,blue,alpha) end
+    end
+    surface:SetColorTexture(base[1],base[2],base[3],opacity or 1)
+    return surface
+end
+
 local function setText(fs,str,width)
     fs:SetText(str or "")
     if width then fs:SetWidth(math.max(24,width)) end
@@ -96,10 +159,12 @@ local function formatStatus(o)
         local a,b=raw:match("(%d+)%s*/%s*(%d+)")
         if a and b then count,total=tonumber(a),tonumber(b) end
     end
-    -- Remove the leading numerical counter from default Blizzard objective text.
+    -- Some clients append the current/required count to the objective text.
+    -- The right-hand amount already displays that value, so keep the label clean.
     local description=raw:gsub("^%s*%d+%s*/%s*%d+%s*","")
     description=description:gsub("^%s*:%s*","")
-    if description=="" then description=raw end
+    description=description:gsub("%s*:%s*%d+%s*/%s*%d+%s*$","")
+    description=description:gsub("%s+$", "")
     if description=="" then description="Objective" end
     local complete=o.finished==true or o.isFinished==true or o.isComplete==true
     if count and total and total>0 and count>=total then complete=true end
@@ -269,11 +334,16 @@ local function snapshot()
         local a=safe(GetNumQuestLogEntries)
         if type(a)=="number" then total=a end
     end
+    local logZone = "Other Quests"
     for i=1,total do
         local name,level,header,id,complete=questTitleFromLog(i)
-        if name and not header then
+        if header and type(name)=="string" and name~="" then
+            -- Quest-log headers are authoritative for quest zone membership.
+            -- This does not expand/collapse Blizzard's own quest-log headers.
+            logZone=name
+        elseif name and not header then
             if type(id)~="number" or id<=0 then id=nil end
-            local e={index=i,id=id,title=name,level=tonumber(level) or 0,complete=complete==true or complete==1}
+            local e={index=i,id=id,title=name,zone=logZone,level=tonumber(level) or 0,complete=complete==true or complete==1}
             e.key=id and ("quest:"..id) or ("index:"..i)
             if id and C_QuestLog and C_QuestLog.IsComplete then
                 local done=safe(C_QuestLog.IsComplete,id)
@@ -356,10 +426,8 @@ end
 
 local function makeButton(parent,text,onClick)
     local b=CreateFrame("Button",nil,parent)
-    backing(b,COLORS.surface)
-    local highlight=b:CreateTexture(nil,"HIGHLIGHT")
-    highlight:SetAllPoints(b)
-    color(highlight,COLORS.blue,0.17)
+    roundedBacking(b,COLORS.surface,4)
+    roundedBacking(b,COLORS.blue,4,"HIGHLIGHT",0.17)
     b.text=fontString(b,12,COLORS.white,"CENTER")
     b.text:SetPoint("CENTER")
     b.text:SetJustifyV("MIDDLE")
@@ -461,8 +529,14 @@ local function createRow(parent)
     row.bubble:SetScript("OnClick",function(self)
         local q=self.quest
         if not q or not q.id then return end
-        local target=(superTrackedQuest()==q.id) and 0 or q.id
+        local nav=addon.Navigation
+        local current=(nav and type(nav.GetSelectedQuestID)=="function")
+            and nav:GetSelectedQuestID() or superTrackedQuest()
+        local target=(current==q.id) and 0 or q.id
         if setSuperTrackedQuest(target) then
+            if nav and type(nav.OnQuestSelected)=="function" then
+                pcall(nav.OnQuestSelected,nav,target)
+            end
             -- Update immediately; the event/periodic refresh also catches external changes.
             dirty=true
             markerTooltip(self)
@@ -484,6 +558,14 @@ local function createRow(parent)
     row.bubble.halo:SetJustifyV("MIDDLE")
     row.bubble.halo:SetAlpha(0.38)
     row.bubble.halo:Hide()
+    -- Small static navigation indicator. A separate file is more reliable
+    -- than clipping a cell from the 2048px animation atlas at small UI sizes.
+    row.navIcon=row:CreateTexture(nil,"ARTWORK")
+    -- Static icon is independent from the quest marker and label.
+    -- The tracker has a reserved left gutter, so the sprite never gets clipped.
+    row.navIcon:SetSize(28,28)
+    row.navIcon:SetPoint("TOPLEFT",row,"TOPLEFT",-28,-5)
+    row.navIcon:Hide()
     row.objectives={}
     row:SetScript("OnClick",function(self,btn)
         if not self.quest then return end
@@ -504,6 +586,113 @@ local function createRow(parent)
     row:RegisterForClicks("LeftButtonUp","RightButtonUp")
     return row
 end
+-- Minimalist zone headings: no backgrounds, borders, dividers, or lines.
+-- Click anywhere on the heading to expand/collapse; quest row geometry stays intact.
+local function createZoneHeader(parent)
+    local z=CreateFrame("Button",nil,parent)
+    z:SetHeight(20)
+    z:EnableMouse(true)
+    z:RegisterForClicks("LeftButtonUp")
+
+    z.arrow=fontString(z,11,COLORS.gold,"CENTER")
+    z.arrow:SetPoint("LEFT",z,"LEFT",0,0)
+    z.arrow:SetSize(12,18)
+    z.arrow:SetJustifyV("MIDDLE")
+
+    z.title=fontString(z,12,COLORS.muted)
+    z.title:SetPoint("LEFT",z.arrow,"RIGHT",4,0)
+    z.title:SetPoint("RIGHT",z,"RIGHT",-79,0)
+    z.title:SetHeight(18)
+    z.title:SetJustifyV("MIDDLE")
+
+    z.count=fontString(z,10,COLORS.muted,"RIGHT")
+    z.count:SetPoint("RIGHT",z,"RIGHT",0,0)
+    z.count:SetSize(72,18)
+    z.count:SetJustifyV("MIDDLE")
+
+    z:SetScript("OnClick",function(self)
+        if not self.group then return end
+        zoneOverrides[self.group.key]=not self.group.expanded
+        snapZoneLayout=true
+        dirty=true
+    end)
+    z:SetScript("OnEnter",function(self)
+        if not self.group or not GameTooltip then return end
+        GameTooltip:SetOwner(self,"ANCHOR_LEFT")
+        GameTooltip:SetText(self.group.expanded and "Collapse zone quests" or "Expand zone quests")
+        GameTooltip:Show()
+    end)
+    z:SetScript("OnLeave",function()
+        if GameTooltip then GameTooltip:Hide() end
+    end)
+    return z
+end
+local function zoneKey(zone)
+    return tostring(zone or ""):lower():gsub("^%s+",""):gsub("%s+$","")
+end
+local function getPlayerZoneKey()
+    -- GetZoneText is the parent zone (e.g. Teldrassil), not the subzone
+    -- (e.g. Shadowglen). Quest-log headers generally use this parent zone.
+    local current=safe(GetZoneText)
+    if type(current)~="string" or current=="" then current=safe(GetRealZoneText) end
+    return zoneKey(current)
+end
+local function buildZoneLayout(quests)
+    local playerZone=getPlayerZoneKey()
+    if lastPlayerZone~=playerZone then
+        lastPlayerZone=playerZone
+        zoneOverrides={}
+        snapZoneLayout=true
+    end
+    local zoneMap,groups={},{}
+    for _,q in ipairs(quests) do
+        local name=q.zone or "Other Quests"
+        local key=zoneKey(name)
+        local group=zoneMap[key]
+        if not group then
+            group={key=key,title=name,quests={},count=0,isCurrent=false}
+            groups[#groups+1]=group
+            zoneMap[key]=group
+        end
+        group.quests[#group.quests+1]=q
+        group.count=group.count+1
+    end
+    local currentGroup
+    for _,group in ipairs(groups) do
+        if playerZone~="" and group.key==playerZone then
+            currentGroup=group
+            group.isCurrent=true
+            break
+        end
+    end
+    -- If the player's zone has no tracked quests, show the first group rather
+    -- than presenting a tracker containing only collapsed headings.
+    local defaultGroup=currentGroup or groups[1]
+    if currentGroup and groups[1]~=currentGroup then
+        for i,group in ipairs(groups) do
+            if group==currentGroup then table.remove(groups,i);break end
+        end
+        table.insert(groups,1,currentGroup)
+    end
+    local items,displayed={},{}
+    for _,group in ipairs(groups) do
+        local override=zoneOverrides[group.key]
+        if override~=nil then
+            group.expanded=override
+        else
+            group.expanded=(group==defaultGroup)
+        end
+        items[#items+1]={kind="zone",group=group}
+        if group.expanded then
+            for _,q in ipairs(group.quests) do
+                items[#items+1]={kind="quest",quest=q}
+                displayed[#displayed+1]=q
+            end
+        end
+    end
+    return items,displayed
+end
+
 local function objectiveWidget(row,index)
     if row.objectives[index] then return row.objectives[index] end
     local w=CreateFrame("Frame",nil,row)
@@ -538,7 +727,8 @@ local function updateRow(row,q,width)
     row.symbol:SetText(completed and "?" or "!")
     row.bubble.ring:Hide()
     row.bubble.glow:Hide()
-    local activelyTracked=q.id and superTrackedQuest()==q.id
+    local nav=addon.Navigation
+    local activelyTracked=q.id and (((nav and type(nav.GetSelectedQuestID)=="function") and nav:GetSelectedQuestID()) or superTrackedQuest())==q.id
     row.bubble.halo:SetShown(activelyTracked and true or false)
     if activelyTracked then
         row.bubble.halo:SetText(completed and "?" or "!")
@@ -547,6 +737,22 @@ local function updateRow(row,q,width)
         row.bubble.halo:SetTextColor(headingColor[1],headingColor[2],headingColor[3])
         row.bubble.halo:SetShadowColor(headingColor[1],headingColor[2],headingColor[3],0.85)
         row.bubble.halo:SetShadowOffset(0,0)
+    end
+    -- Fixed quest row geometry regardless of selection; no !, title, or bar moves.
+    local textInset=26
+    row.bubble:ClearAllPoints()
+    row.bubble:SetSize(24,26)
+    row.bubble:SetPoint("TOPLEFT",row,"TOPLEFT",1,-1)
+    row.head:ClearAllPoints()
+    row.head:SetPoint("TOPLEFT",row,"TOPLEFT",textInset,-2)
+    row.titleButton:ClearAllPoints()
+    row.titleButton:SetPoint("TOPLEFT",row,"TOPLEFT",textInset,-2)
+    if activelyTracked then
+        local iconName=(db and db.theme=="ice") and "TrackedArrowPremiumIce" or "TrackedArrowPremiumGold"
+        row.navIcon:SetTexture("Interface\\AddOns\\XenQuest\\Media\\"..iconName)
+        row.navIcon:Show()
+    else
+        row.navIcon:Hide()
     end
     local itemWidth=ItemButtons:UpdateRow(row,q,db.showQuestItems)
     row.head:SetWidth(math.max(80,width-32-itemWidth))
@@ -642,7 +848,7 @@ local function smooth(t)
 end
 local function placeRow(row)
     row:ClearAllPoints()
-    row:SetPoint("TOPLEFT",tracker.content,"TOPLEFT",5+(row.x or 0),-row.y)
+    row:SetPoint("TOPLEFT",tracker.content,"TOPLEFT",5+NAV_MARKER_GUTTER+(row.x or 0),-row.y)
 end
 local function resetShimmer(row)
     row.shimmer:Hide()
@@ -724,25 +930,56 @@ layoutRows=function(snap)
         if a then delay=math.max(delay,GLIDE_START-a.age) end
     end
     paintOrder={}
-    for rank,q in ipairs(renderedQuestIDs) do
-        local row=rows[q.key]
-        row.rank=rank
-        row:SetWidth(width)
-        local h=updateRow(row,q,width)
-        if snap or row.y==nil then
-            row.y,row.x,row.motion=y,0,nil
-            row.returnMotion=nil
-        elseif row.targetY~=y then
-            local a=q.state.animation
-            local wait=a and math.max(0,GLIDE_START-a.age) or delay
-            local duration=a and math.max(0.12,GLIDE_END-a.age-wait) or (delay>0 and GLIDE_END-GLIDE_START or 0.30)
-            row.motion={from=row.y,to=y,age=0,delay=wait,duration=duration}
+    local rank=0
+    for _,item in ipairs(zoneLayoutItems) do
+        if item.kind=="zone" then
+            local group=item.group
+            local header=zoneHeaders[group.key]
+            if not header then
+                header=createZoneHeader(tracker.content)
+                zoneHeaders[group.key]=header
+            end
+            header.group=group
+            header:SetWidth(width)
+            local textColor=group.isCurrent and COLORS.gold or COLORS.muted
+            header.title.xqColor=textColor
+            header.arrow.xqColor=textColor
+            header.count.xqColor=COLORS.muted
+            applyFont(header.title,12,"OUTLINE")
+            applyFont(header.arrow,11)
+            applyFont(header.count,10)
+            header.title:SetText(group.title)
+            header.arrow:SetText(group.expanded and "v" or ">")
+            header.count:SetText(group.count==1 and "1 quest" or (group.count.." quests"))
+            -- Sections are separated by whitespace only, not decorated lines.
+            -- Leave a little extra air before subsequent zone headings.
+            if y>0 then y=y+8 end
+            header:ClearAllPoints()
+            header:SetPoint("TOPLEFT",tracker.content,"TOPLEFT",5+NAV_MARKER_GUTTER,-y)
+            header:Show()
+            y=y+header:GetHeight()+6
+        else
+            local q=item.quest
+            local row=rows[q.key]
+            rank=rank+1
+            row.rank=rank
+            row:SetWidth(width)
+            local h=updateRow(row,q,width)
+            if snap or row.y==nil then
+                row.y,row.x,row.motion=y,0,nil
+                row.returnMotion=nil
+            elseif row.targetY~=y then
+                local a=q.state.animation
+                local wait=a and math.max(0,GLIDE_START-a.age) or delay
+                local duration=a and math.max(0.12,GLIDE_END-a.age-wait) or (delay>0 and GLIDE_END-GLIDE_START or 0.30)
+                row.motion={from=row.y,to=y,age=0,delay=wait,duration=duration}
+            end
+            row.targetY=y
+            placeRow(row)
+            row:Show()
+            paintOrder[#paintOrder+1]=row
+            y=y+h+3
         end
-        row.targetY=y
-        placeRow(row)
-        row:Show()
-        paintOrder[#paintOrder+1]=row
-        y=y+h+3
     end
     -- Drawing priority is independent of quest data and target layout order.
     table.sort(paintOrder,function(a,b)
@@ -837,18 +1074,40 @@ local function render()
     end
     questStates=states
     completionBaseline=false
-    -- Stable partition preserves Blizzard order inside each completion group.
-    local quests,completed,used={},{},{}
+    -- Group by Blizzard quest-log zone. Within each zone, incomplete quests
+    -- precede completed ones while preserving log order in both partitions.
+    local grouped,groupOrder,used={}, {}, {}
     for _,q in ipairs(visible) do
         if not used[q.key] then
             used[q.key]=true
-            local group=q.complete and completed or quests
-            group[#group+1]=q
+            local key=zoneKey(q.zone)
+            if not grouped[key] then
+                grouped[key]={active={},complete={}}
+                groupOrder[#groupOrder+1]=key
+            end
+            local list=q.complete and grouped[key].complete or grouped[key].active
+            list[#list+1]=q
         end
     end
-    for _,q in ipairs(completed) do quests[#quests+1]=q end
+    local quests={}
+    for _,key in ipairs(groupOrder) do
+        local group=grouped[key]
+        for _,q in ipairs(group.active) do quests[#quests+1]=q end
+        for _,q in ipairs(group.complete) do quests[#quests+1]=q end
+    end
+    local layout,displayed=buildZoneLayout(quests)
+    zoneLayoutItems=layout
+    local shown={}
+    for _,q in ipairs(displayed) do shown[q.key]=true end
+    local visibleHeaders={}
+    for _,item in ipairs(layout) do
+        if item.kind=="zone" then visibleHeaders[item.group.key]=true end
+    end
+    for key,header in pairs(zoneHeaders) do
+        if not visibleHeaders[key] then header:Hide();header.group=nil end
+    end
     for key,row in pairs(rows) do
-        if not used[key] then
+        if not shown[key] then
             ItemButtons:Release(row)
             if row.quest.state.animation then
                 row.quest.state.animation=nil
@@ -864,11 +1123,12 @@ local function render()
             spareRows[#spareRows+1]=row
         end
     end
-    for _,q in ipairs(quests) do
+    for _,q in ipairs(displayed) do
         if not rows[q.key] then rows[q.key]=table.remove(spareRows) or createRow(tracker.content) end
     end
-    renderedQuestIDs=quests
-    layoutRows(not trackerVisible)
+    renderedQuestIDs=displayed
+    layoutRows(not trackerVisible or snapZoneLayout)
+    snapZoneLayout=false
     tracker.count:SetText(#quests.." quests")
     applyFont(tracker.count,10)
     if #quests==0 then
@@ -881,7 +1141,7 @@ local function render()
 end
 local function visualSettings()
     if not tracker then return end
-    tracker:SetSize(db.width,db.minimized and 36 or db.height)
+    tracker:SetSize(db.width+NAV_MARKER_GUTTER,db.minimized and 36 or db.height)
     tracker:SetScale(db.scale)
     color(tracker.background,COLORS.background,db.opacity)
     tracker.edge:SetAlpha(db.opacity)
@@ -895,13 +1155,13 @@ local function visualSettings()
     if tracker.collapse and tracker.collapse.text then
         tracker.collapse.text:SetText(db.minimized and "+" or "-")
     end
-    tracker.content:SetWidth(db.width-28)
+    tracker.content:SetWidth(db.width-28+NAV_MARKER_GUTTER)
     if db.minimized then finishAnimations() end
     dirty=true
 end
 local function createTracker()
     tracker=CreateFrame("Frame","XenQuestTracker",UIParent)
-    tracker:SetSize(db.width,db.minimized and 36 or db.height)
+    tracker:SetSize(db.width+NAV_MARKER_GUTTER,db.minimized and 36 or db.height)
     tracker:SetScale(db.scale)
     tracker:SetPoint("TOPRIGHT",UIParent,"TOPRIGHT",db.x,db.y)
     tracker:SetFrameStrata("LOW")
@@ -942,11 +1202,7 @@ local function createTracker()
     tracker.header:SetHeight(28)
     tracker.header:SetPoint("TOPLEFT",8,-5)
     tracker.header:SetPoint("TOPRIGHT",-8,-5)
-    tracker.title=fontString(tracker.header,14,COLORS.gold)
-    tracker.title:SetPoint("TOPLEFT",3,-4)
-    tracker.title:SetText("XenQuest")
-    tracker.title.xqSize=14
-    local original=tracker.title
+    -- Minimal tracker header: quest count and controls only.
     tracker.count=fontString(tracker.header,10,COLORS.muted)
     tracker.count:SetPoint("TOPRIGHT",-29,-7)
     local gear=CreateFrame("Button",nil,tracker.header)
@@ -995,7 +1251,7 @@ local function createTracker()
     tracker.scroll=CreateFrame("ScrollFrame",nil,tracker)
     tracker.scroll:EnableMouseWheel(true)
     tracker.content=CreateFrame("Frame",nil,tracker.scroll)
-    tracker.content:SetSize(db.width-28,1)
+    tracker.content:SetSize(db.width-28+NAV_MARKER_GUTTER,1)
     tracker.scroll:SetScrollChild(tracker.content)
     tracker.scroll:SetScript("OnMouseWheel",function(self,delta)
         local current=self:GetVerticalScroll() or 0
@@ -1005,9 +1261,8 @@ local function createTracker()
         ItemButtons:Sync(tracker,db)
     end)
     tracker.empty=fontString(tracker.content,11,COLORS.muted)
-    tracker.empty:SetPoint("TOPLEFT",8,-12)
+    tracker.empty:SetPoint("TOPLEFT",8+NAV_MARKER_GUTTER,-12)
     visualSettings()
-    applyFont(original,14,"OUTLINE")
 end
 local function settingsTitle(parent,title,y)
     local t=fontString(parent,12,COLORS.gold)
@@ -1018,10 +1273,10 @@ local function settingsTitle(parent,title,y)
 end
 local function slider(parent,name,min,max,step,y,getValue,setValue,format)
     local lab=fontString(parent,12,COLORS.white)
-    lab:SetPoint("TOPLEFT",22,y)
+    lab:SetPoint("TOPLEFT",17,y)
     local s=CreateFrame("Slider",nil,parent)
-    s:SetPoint("TOPLEFT",22,y-22)
-    s:SetSize(310,15)
+    s:SetPoint("TOPLEFT",17,y-22)
+    s:SetSize(314,15)
     s:SetOrientation("HORIZONTAL")
     s:SetMinMaxValues(min,max)
     s:SetValueStep(step)
@@ -1050,22 +1305,117 @@ local function slider(parent,name,min,max,step,y,getValue,setValue,format)
     end)
     return s
 end
-local function toggle(parent,caption,y,get,set)
+-- Settings actions display what clicking will do, rather than a checked state.
+local function toggle(parent,whenEnabled,whenDisabled,y,get,set)
     local b=makeButton(parent,"",function(self)
         set(not get())
-        self.text:SetText((get() and "[x] " or "[ ] ")..caption)
+        self.text:SetText(get() and whenEnabled or whenDisabled)
+        applyFont(self.text,11)
         visualSettings()
         hideBlizzardTracker()
     end)
-    b:SetPoint("TOPLEFT",20,y)
-    b:SetSize(320,25)
-    b.text:SetText((get() and "[x] " or "[ ] ")..caption)
+    b:SetPoint("TOPLEFT",17,y)
+    -- Preserve all four anchor positions, but give the buttons 3px breathing room.
+    b:SetSize(314,26)
+    b.text:SetText(get() and whenEnabled or whenDisabled)
     applyFont(b.text,11)
     return b
 end
+-- A lightweight dropdown avoids Blizzard template differences between clients.
+-- Each font row previews its own font; unavailable custom fonts fall back safely.
+local function settingsDropdown(parent,label,x,y,width,items,currentValue,onChoose)
+    local caption=fontString(parent,11,COLORS.muted)
+    caption:SetPoint("TOPLEFT",parent,"TOPLEFT",x,y)
+    caption:SetText(label)
+    applyFont(caption,11)
+
+    local button=makeButton(parent,"",function() end)
+    button:SetPoint("TOPLEFT",parent,"TOPLEFT",x,y-16)
+    button:SetSize(width,28)
+    button.text:ClearAllPoints()
+    button.text:SetPoint("LEFT",button,"LEFT",10,0)
+    button.text:SetPoint("RIGHT",button,"RIGHT",-25,0)
+    button.text:SetJustifyH("LEFT")
+    local arrow=fontString(button,12,COLORS.gold,"CENTER")
+    arrow:SetPoint("RIGHT",button,"RIGHT",-9,0)
+    arrow:SetText("v")
+    applyFont(arrow,12)
+
+    local menu=CreateFrame("Frame",nil,parent)
+    menu:SetPoint("TOPLEFT",button,"BOTTOMLEFT",0,-2)
+    menu:SetSize(width,#items*28+4)
+    menu:SetFrameStrata("FULLSCREEN_DIALOG")
+    menu:SetFrameLevel(parent:GetFrameLevel()+20)
+    roundedBacking(menu,{0.035,0.072,0.10},4)
+    local border=menu:CreateTexture(nil,"BORDER")
+    border:SetColorTexture(0.27,0.38,0.43,0.85)
+    border:SetPoint("TOPLEFT",0,0)
+    border:SetPoint("TOPRIGHT",0,0)
+    border:SetHeight(1)
+    menu:Hide()
+    local options={}
+    local refresh
+    for i,item in ipairs(items) do
+        local entry=makeButton(menu,"",function()
+            onChoose(item.value)
+            refresh()
+            menu:Hide()
+        end)
+        entry:SetPoint("TOPLEFT",menu,"TOPLEFT",2,-2-(i-1)*28)
+        entry:SetSize(width-4,27)
+        entry:SetFrameLevel(menu:GetFrameLevel()+1)
+        entry.text:SetJustifyH("LEFT")
+        entry.text:ClearAllPoints()
+        entry.text:SetPoint("LEFT",entry,"LEFT",9,0)
+        entry.text:SetPoint("RIGHT",entry,"RIGHT",-6,0)
+        entry.text:SetText(item.label)
+        if item.font then
+            local ok,loaded=pcall(entry.text.SetFont,entry.text,item.font,12,"")
+            if not ok or loaded==false then applyFont(entry.text,11) end
+        else
+            applyFont(entry.text,11)
+        end
+        options[#options+1]=entry
+    end
+    refresh=function()
+        local value=currentValue()
+        for _,item in ipairs(items) do
+            if item.value==value then
+                button.text:SetText(item.label)
+                if item.font then
+                    local ok,loaded=pcall(button.text.SetFont,button.text,item.font,12,"")
+                    if not ok or loaded==false then applyFont(button.text,11) end
+                else applyFont(button.text,11) end
+                break
+            end
+        end
+    end
+    button:SetScript("OnClick",function()
+        -- Only one selection menu can be open at a time.
+        if parent.xqOpenMenu and parent.xqOpenMenu~=menu then parent.xqOpenMenu:Hide() end
+        if menu:IsShown() then menu:Hide() else refresh();menu:Show() end
+        parent.xqOpenMenu=menu
+    end)
+    parent:HookScript("OnHide",function() menu:Hide() end)
+    refresh()
+    return refresh
+end
+local function applyTheme()
+    if db.theme=="ice" then COLORS.gold={0.46,0.82,0.98} else COLORS.gold={0.96,0.77,0.36} end
+    visualSettings()
+    if addon.Navigation and type(addon.Navigation.ApplySettings)=="function" then
+        pcall(addon.Navigation.ApplySettings,addon.Navigation)
+    end
+end
+local function refreshNavigationSettings()
+    if addon.Navigation and type(addon.Navigation.ApplySettings)=="function" then
+        pcall(addon.Navigation.ApplySettings,addon.Navigation)
+    end
+end
+
 local function createSettings()
     settings=CreateFrame("Frame","XenQuestSettings",UIParent)
-    settings:SetSize(362,545)
+    settings:SetSize(372,558)
     settings:SetPoint("CENTER",UIParent,"CENTER")
     settings:SetFrameStrata("DIALOG")
     settings:SetMovable(true)
@@ -1073,47 +1423,248 @@ local function createSettings()
     settings:RegisterForDrag("LeftButton")
     settings:SetScript("OnDragStart",function(self) self:StartMoving() end)
     settings:SetScript("OnDragStop",function(self) self:StopMovingOrSizing() end)
-    backing(settings,COLORS.background)
-    local heading=settingsTitle(settings,"XenQuest  /  SETTINGS",-18)
-    local close=makeButton(settings,"X",function() settings:Hide() end)
-    close:SetSize(24,24)
-    close:SetPoint("TOPRIGHT",-12,-11)
-    applyFont(close.text,12)
-    slider(settings,"Background opacity",0,100,1,-55,function() return db.opacity*100 end,function(v) db.opacity=v/100 end,function(v) return tostring(math.floor(v+0.5)).."%" end)
-    slider(settings,"UI scale",70,150,5,-113,function() return db.scale*100 end,function(v) db.scale=v/100 end,function(v) return tostring(v).."%" end)
-    slider(settings,"Tracker width",260,520,10,-171,function() return db.width end,function(v) db.width=v end)
-    slider(settings,"Tracker height",200,700,10,-229,function() return db.height end,function(v) db.height=v end)
-    slider(settings,"Font size",10,18,1,-287,function() return db.fontSize end,function(v) db.fontSize=v end)
-    local fontBtn=makeButton(settings,"",function(self)
-        db.font=(db.font%#FONTS)+1
-        self.text:SetText("Font: "..fontChoiceLabel().."  >")
-        applyFont(self.text,12)
+    roundedBacking(settings,COLORS.background,4)
+
+    local header=CreateFrame("Frame",nil,settings)
+    header:SetPoint("TOPLEFT",settings,"TOPLEFT",1,-1)
+    header:SetPoint("TOPRIGHT",settings,"TOPRIGHT",-1,-1)
+    header:SetHeight(40)
+    roundedBacking(header,{0.022,0.042,0.062},4)
+
+    local heading=fontString(header,11,COLORS.muted)
+    heading:SetPoint("LEFT",header,"LEFT",16,0)
+    heading:SetSize(120,24)
+    heading:SetJustifyV("MIDDLE")
+    heading:SetText("SETTINGS")
+    applyFont(heading,11)
+    local close=CreateFrame("Button",nil,header)
+    close:SetSize(29,29)
+    close:SetPoint("RIGHT",header,"RIGHT",-7,0)
+    close.text=fontString(close,17,COLORS.white,"CENTER")
+    close.text:SetAllPoints(close)
+    close.text:SetJustifyV("MIDDLE")
+    close.text:SetText("X")
+    applyFont(close.text,17)
+    close:SetScript("OnClick",function() settings:Hide() end)
+    close:SetScript("OnEnter",function() close.text:SetTextColor(1,0.65,0.38) end)
+    close:SetScript("OnLeave",function() close.text:SetTextColor(COLORS.white[1],COLORS.white[2],COLORS.white[3]) end)
+
+    -- Both tabs occupy exactly the same width as the darker content panel.
+    local rail=CreateFrame("Frame",nil,settings)
+    rail:SetPoint("TOPLEFT",settings,"TOPLEFT",12,-46)
+    rail:SetPoint("TOPRIGHT",settings,"TOPRIGHT",-12,-46)
+    rail:SetHeight(32)
+
+    local content=CreateFrame("Frame",nil,settings)
+    content:SetPoint("TOPLEFT",settings,"TOPLEFT",12,-77)
+    content:SetPoint("BOTTOMRIGHT",settings,"BOTTOMRIGHT",-12,43)
+    roundedBacking(content,{0.032,0.062,0.086},4)
+    local topBorder=content:CreateTexture(nil,"BORDER")
+    topBorder:SetColorTexture(0.23,0.38,0.42,0.38)
+    topBorder:SetHeight(1)
+    topBorder:SetPoint("TOPLEFT")
+    topBorder:SetPoint("TOPRIGHT")
+
+    local pages=CreateFrame("Frame",nil,content)
+    pages:SetPoint("TOPLEFT",content,"TOPLEFT",0,-13)
+    pages:SetPoint("BOTTOMRIGHT",content,"BOTTOMRIGHT",0,10)
+    local trackerPage=CreateFrame("Frame",nil,pages)
+    trackerPage:SetAllPoints(pages)
+    local navigationPage=CreateFrame("Frame",nil,pages)
+    navigationPage:SetAllPoints(pages)
+
+    -- Tabs sit above the panel edge, with no movement when selected.
+    rail:SetFrameLevel(content:GetFrameLevel()+3)
+    local function makeTab(label)
+        local b=CreateFrame("Button",nil,rail)
+        b:SetHeight(32)
+        b.bg=roundedBacking(b,{0.10,0.17,0.21},4)
+        b.topEdge=b:CreateTexture(nil,"ARTWORK")
+        b.topEdge:SetHeight(2)
+        b.topEdge:SetPoint("TOPLEFT",b,"TOPLEFT",4,0)
+        b.topEdge:SetPoint("TOPRIGHT",b,"TOPRIGHT",-4,0)
+        b.bottomEdge=b:CreateTexture(nil,"ARTWORK")
+        b.bottomEdge:SetHeight(2)
+        b.bottomEdge:SetPoint("BOTTOMLEFT",b,"BOTTOMLEFT")
+        b.bottomEdge:SetPoint("BOTTOMRIGHT",b,"BOTTOMRIGHT")
+        b.text=fontString(b,12,COLORS.white,"CENTER")
+        b.text:SetAllPoints(b)
+        b.text:SetJustifyH("CENTER")
+        b.text:SetJustifyV("MIDDLE")
+        b.text:SetText(label)
+        -- Unlike tracker text, the tab labels use a consistent UI typeface.
+        local ok,loaded=pcall(b.text.SetFont,b.text,"Fonts\\FRIZQT__.TTF",12,"OUTLINE")
+        if not ok or loaded==false then applyFont(b.text,12,"OUTLINE") end
+        return b
+    end
+    local trackerTab=makeTab("Tracker")
+    trackerTab:SetPoint("TOPLEFT",rail,"TOPLEFT",0,0)
+    trackerTab:SetPoint("BOTTOMRIGHT",rail,"BOTTOM",-1,0)
+    local navTab=makeTab("Navigation")
+    navTab:SetPoint("TOPLEFT",rail,"TOP",1,0)
+    navTab:SetPoint("BOTTOMRIGHT",rail,"BOTTOMRIGHT",0,0)
+
+    local activePage="tracker"
+    local function paintTab(button,isActive)
+        color(button.bg,isActive and {0.032,0.062,0.086} or {0.10,0.17,0.21})
+        color(button.topEdge,COLORS.gold,isActive and 1 or 0)
+        color(button.bottomEdge,isActive and {0.032,0.062,0.086} or {0.23,0.38,0.42},isActive and 1 or 0.5)
+        if isActive then
+            button.text:SetTextColor(COLORS.gold[1],COLORS.gold[2],COLORS.gold[3])
+        else
+            button.text:SetTextColor(COLORS.white[1],COLORS.white[2],COLORS.white[3])
+        end
+    end
+    local function setTab(name)
+        activePage=name
+        trackerPage:SetShown(name=="tracker")
+        navigationPage:SetShown(name=="navigation")
+        paintTab(trackerTab,name=="tracker")
+        paintTab(navTab,name=="navigation")
+    end
+    trackerTab:SetScript("OnClick",function() setTab("tracker") end)
+    navTab:SetScript("OnClick",function() setTab("navigation") end)
+
+    slider(trackerPage,"Background opacity",0,100,1,-8,function() return db.opacity*100 end,function(v) db.opacity=v/100 end,function(v) return tostring(math.floor(v+0.5)).."%" end)
+    slider(trackerPage,"UI scale",70,150,5,-53,function() return db.scale*100 end,function(v) db.scale=v/100 end,function(v) return tostring(v).."%" end)
+    slider(trackerPage,"Tracker width",260,520,10,-98,function() return db.width end,function(v) db.width=v end)
+    slider(trackerPage,"Tracker height",200,700,10,-143,function() return db.height end,function(v) db.height=v end)
+    slider(trackerPage,"Font size",10,18,1,-188,function() return db.fontSize end,function(v) db.fontSize=v end)
+
+    local fontItems={}
+    for i,f in ipairs(FONTS) do fontItems[#fontItems+1]={value=i,label=f.label,font=f.path} end
+    settingsDropdown(trackerPage,"Font",17,-236,152,fontItems,function() return db.font end,function(v)
+        db.font=v
         visualSettings()
     end)
-    fontBtn:SetPoint("TOPLEFT",20,-340)
-    fontBtn:SetSize(322,29)
-    fontBtn.text:SetText("Font: "..fontChoiceLabel().."  >")
-    applyFont(fontBtn.text,12)
-    local themeBtn=makeButton(settings,"",function(self)
-        db.theme=(db.theme=="gold") and "ice" or "gold"
-        if db.theme=="ice" then COLORS.gold={0.46,0.82,0.98} else COLORS.gold={0.96,0.77,0.36} end
-        self.text:SetText("Accent theme: "..(db.theme=="ice" and "Icy blue" or "Warm gold").."  >")
-        applyFont(self.text,12)
-        visualSettings()
+    settingsDropdown(trackerPage,"Accent theme",179,-236,152,{
+        {value="gold",label="Warm Gold"},
+        {value="ice",label="Icy Blue"},
+    },function() return db.theme end,function(v)
+        db.theme=v
+        applyTheme()
+        paintTab(trackerTab,activePage=="tracker")
+        paintTab(navTab,activePage=="navigation")
     end)
-    themeBtn:SetPoint("TOPLEFT",20,-376)
-    themeBtn:SetSize(322,28)
-    themeBtn.text:SetText("Accent theme: "..(db.theme=="ice" and "Icy blue" or "Warm gold").."  >")
-    applyFont(themeBtn.text,12)
-    toggle(settings,"Hide Blizzard quest tracker",-410,function() return db.hideBlizzard end,function(v) db.hideBlizzard=v end)
-    toggle(settings,"Show only watched quests",-439,function() return db.trackedOnly end,function(v) db.trackedOnly=v end)
-    toggle(settings,"Lock tracker position",-468,function() return db.locked end,function(v) db.locked=v end)
-    toggle(settings,"Show quest item buttons",-497,function() return db.showQuestItems end,function(v)
+
+    toggle(trackerPage,"Show Blizzard quest tracker","Hide Blizzard quest tracker",-298,function() return db.hideBlizzard end,function(v) db.hideBlizzard=v end)
+    toggle(trackerPage,"Show all quests","Show only watched quests",-327,function() return db.trackedOnly end,function(v) db.trackedOnly=v end)
+    toggle(trackerPage,"Unlock tracker position","Lock tracker position",-356,function() return db.locked end,function(v) db.locked=v end)
+    toggle(trackerPage,"Hide quest item buttons","Show quest item buttons",-385,function() return db.showQuestItems end,function(v)
         db.showQuestItems=v
         if not v then ItemButtons:HideActions() else QuestItems:Invalidate() end
     end)
+
+    slider(navigationPage,"Arrow size",64,140,2,-8,function() return db.navigation.arrowSize or NAV_DEFAULTS.arrowSize end,function(v) db.navigation.arrowSize=v; refreshNavigationSettings() end)
+    slider(navigationPage,"Quest title text",11,20,1,-53,function() return db.navigation.titleSize or NAV_DEFAULTS.titleSize end,function(v) db.navigation.titleSize=v; refreshNavigationSettings() end)
+    slider(navigationPage,"Distance text",10,18,1,-98,function() return db.navigation.distanceSize or NAV_DEFAULTS.distanceSize end,function(v) db.navigation.distanceSize=v; refreshNavigationSettings() end)
+    local navHint=fontString(navigationPage,11,COLORS.muted)
+    navHint:SetPoint("TOPLEFT",17,-145)
+    navHint:SetWidth(314)
+    navHint:SetText("The navigation arrow matches your accent theme. Drag it in-game to move it; choose a quest with the ! icon to navigate.")
+    applyFont(navHint,11)
+
+    local footer=CreateFrame("Frame",nil,settings)
+    footer:SetPoint("BOTTOMLEFT",settings,"BOTTOMLEFT",12,6)
+    footer:SetPoint("BOTTOMRIGHT",settings,"BOTTOMRIGHT",-12,6)
+    footer:SetHeight(30)
+    local logo=footer:CreateTexture(nil,"ARTWORK")
+    logo:SetTexture("Interface\\AddOns\\XenQuest\\Media\\XenQuestLogo")
+    logo:SetSize(106,26)
+    -- Crop transparent padding already present in the existing logo texture.
+    logo:SetTexCoord(92/512,420/512,24/128,105/128)
+    logo:SetPoint("LEFT",footer,"LEFT",3,0)
+    local version=fontString(footer,10,COLORS.muted,"RIGHT")
+    version:SetPoint("RIGHT",footer,"RIGHT",-2,0)
+    version:SetSize(130,26)
+    version:SetJustifyV("MIDDLE")
+    local installed=(GetAddOnMetadata and GetAddOnMetadata("XenQuest","Version")) or "0.2.9-beta"
+    version:SetText("v"..tostring(installed):gsub("^v",""))
+    applyFont(version,10)
+
+    -- Community support shortcut. WoW addons cannot open external websites,
+    -- so offer a selectable invite that players can copy with Ctrl+C.
+    local helpButton=CreateFrame("Button",nil,footer)
+    helpButton:SetSize(90,26)
+    helpButton:SetPoint("RIGHT",version,"LEFT",-6,0)
+    local helpText=fontString(helpButton,10,COLORS.muted,"CENTER")
+    helpText:SetAllPoints(helpButton)
+    helpText:SetJustifyV("MIDDLE")
+    helpText:SetText("Need help?")
+    applyFont(helpText,10)
+
+    local helpPopup=CreateFrame("Frame",nil,settings)
+    helpPopup:SetSize(324,114)
+    helpPopup:SetPoint("BOTTOM",footer,"TOP",0,10)
+    helpPopup:SetFrameLevel(settings:GetFrameLevel()+20)
+    roundedBacking(helpPopup,COLORS.surface,4)
+    helpPopup:EnableMouse(true)
+
+    local popupTitle=fontString(helpPopup,12,COLORS.gold)
+    popupTitle:SetPoint("TOPLEFT",helpPopup,"TOPLEFT",13,-11)
+    popupTitle:SetText("XenQuest Community Support")
+    applyFont(popupTitle,12)
+
+    local popupClose=CreateFrame("Button",nil,helpPopup)
+    popupClose:SetSize(22,22)
+    popupClose:SetPoint("TOPRIGHT",helpPopup,"TOPRIGHT",-7,-5)
+    local closeText=fontString(popupClose,14,COLORS.white,"CENTER")
+    closeText:SetAllPoints(popupClose)
+    closeText:SetJustifyV("MIDDLE")
+    closeText:SetText("X")
+    applyFont(closeText,14)
+    popupClose:SetScript("OnClick",function() helpPopup:Hide() end)
+
+    local popupHint=fontString(helpPopup,10,COLORS.muted)
+    popupHint:SetPoint("TOPLEFT",helpPopup,"TOPLEFT",13,-38)
+    popupHint:SetText("Press Ctrl+C, then paste the invite into your browser.")
+    applyFont(popupHint,10)
+
+    local inviteBox=CreateFrame("EditBox",nil,helpPopup)
+    inviteBox:SetSize(298,27)
+    inviteBox:SetPoint("BOTTOM",helpPopup,"BOTTOM",0,12)
+    roundedBacking(inviteBox,COLORS.background,4)
+    inviteBox:SetFontObject(ChatFontNormal or GameFontNormal)
+    inviteBox:SetTextColor(COLORS.white[1],COLORS.white[2],COLORS.white[3])
+    inviteBox:SetTextInsets(7,7,0,0)
+    inviteBox:SetAutoFocus(false)
+    inviteBox:SetText("https://discord.gg/96UKh6AeAN")
+    inviteBox:SetScript("OnEscapePressed",function(self)
+        self:ClearFocus()
+        helpPopup:Hide()
+    end)
+    inviteBox:SetScript("OnEnterPressed",function(self) self:HighlightText() end)
+    inviteBox:SetScript("OnEditFocusGained",function(self) self:HighlightText() end)
+    helpPopup:Hide()
+
+    helpButton:SetScript("OnEnter",function(self)
+        helpText:SetTextColor(COLORS.gold[1],COLORS.gold[2],COLORS.gold[3])
+        if GameTooltip then
+            GameTooltip:SetOwner(self,"ANCHOR_TOP")
+            GameTooltip:SetText("Join the XenQuest Discord for help and suggestions")
+            GameTooltip:Show()
+        end
+    end)
+    helpButton:SetScript("OnLeave",function()
+        helpText:SetTextColor(COLORS.muted[1],COLORS.muted[2],COLORS.muted[3])
+        if GameTooltip then GameTooltip:Hide() end
+    end)
+    helpButton:SetScript("OnClick",function()
+        if helpPopup:IsShown() then
+            helpPopup:Hide()
+        else
+            helpPopup:Show()
+            inviteBox:SetText("https://discord.gg/96UKh6AeAN")
+            inviteBox:SetFocus()
+            inviteBox:HighlightText()
+        end
+    end)
+    settings:HookScript("OnHide",function() helpPopup:Hide() end)
+
     settings:Hide()
+    setTab("tracker")
 end
+
 local function initialize()
     if type(XenQuestDB)~="table" then XenQuestDB={} end
     db=XenQuestDB
@@ -1122,7 +1673,11 @@ local function initialize()
             if type(v)=="table" then db[k]={} else db[k]=v end
         end
     end
-    if db.theme=="ice" then COLORS.gold={0.46,0.82,0.98} end
+    if type(db.navigation)~="table" then db.navigation={} end
+    for k,v in pairs(NAV_DEFAULTS) do
+        if db.navigation[k]==nil then db.navigation[k]=v end
+    end
+    applyTheme()
     -- Use the built-in WoW font by default, including for existing installations.
     if not db.blizzardFontResetApplied then
         db.font=1
@@ -1130,6 +1685,17 @@ local function initialize()
     end
     createTracker()
     createSettings()
+    -- Navigation.lua is loaded before Core.lua by XenQuest.toc. Initialize its
+    -- independent widget with the same SavedVariables database as the tracker.
+    -- A navigation-specific failure must not prevent the quest tracker loading.
+    if addon.Navigation and type(addon.Navigation.Initialize)=="function" then
+        local ok,err=pcall(addon.Navigation.Initialize,addon.Navigation,db)
+        if not ok then
+            print("|cffff6666XenQuest navigation error:|r "..tostring(err))
+        end
+    else
+        print("|cffff6666XenQuest navigation: module not loaded.|r")
+    end
     dirty=true
     print("|cffe8bb59XenQuest|r loaded. Use /xq for settings, /xq all to show every quest.")
 end
@@ -1149,17 +1715,20 @@ SlashCmdList.XENQUEST=function(text)
     elseif text=="hide" then tracker:Hide()
     else settings:SetShown(not settings:IsShown()) end
 end
-XQ:RegisterEvent("ADDON_LOADED")
-XQ:RegisterEvent("PLAYER_ENTERING_WORLD")
-XQ:RegisterEvent("QUEST_LOG_UPDATE")
-XQ:RegisterEvent("QUEST_WATCH_UPDATE")
-XQ:RegisterEvent("SUPER_TRACKING_CHANGED")
-XQ:RegisterEvent("QUEST_ACCEPTED")
-XQ:RegisterEvent("QUEST_REMOVED")
-XQ:RegisterEvent("QUEST_TURNED_IN")
-XQ:RegisterEvent("UNIT_QUEST_LOG_CHANGED")
-XQ:RegisterEvent("PLAYER_REGEN_ENABLED")
-XQ:RegisterEvent("PLAYER_LOGOUT")
+-- Classic Era and Forever expose different event sets. A single unavailable
+-- event must never prevent ADDON_LOADED from initializing the addon.
+local coreEvents={
+    "ADDON_LOADED", "PLAYER_ENTERING_WORLD", "QUEST_LOG_UPDATE",
+    "QUEST_WATCH_UPDATE", "SUPER_TRACKING_CHANGED", "QUEST_ACCEPTED",
+    "QUEST_REMOVED", "QUEST_TURNED_IN", "UNIT_QUEST_LOG_CHANGED",
+    "PLAYER_REGEN_ENABLED", "PLAYER_LOGOUT",
+}
+for _,event in ipairs(coreEvents) do
+    local ok,err=pcall(XQ.RegisterEvent,XQ,event)
+    if not ok and event=="ADDON_LOADED" then
+        print("|cffff6666XenQuest: unable to register load event:|r "..tostring(err))
+    end
+end
 local itemEvents={"BAG_UPDATE","BAG_UPDATE_DELAYED","BAG_UPDATE_COOLDOWN","SPELL_UPDATE_COOLDOWN",
     "ITEM_LOCK_CHANGED","GET_ITEM_INFO_RECEIVED","ITEM_DATA_LOAD_RESULT","PLAYER_REGEN_DISABLED",
     "ZONE_CHANGED_NEW_AREA","UI_SCALE_CHANGED","DISPLAY_SIZE_CHANGED","CVAR_UPDATE","QUEST_TIMER_UPDATE"}
@@ -1170,6 +1739,10 @@ XQ:SetScript("OnEvent",function(self,event,arg)
         if db then hideBlizzardTracker() end
     elseif db then
         if event=="PLAYER_LOGOUT" then BlizzardUI:Shutdown();ItemButtons:HideActions();return end
+        if (event=="QUEST_TURNED_IN" or event=="QUEST_REMOVED")
+            and addon.Navigation and type(addon.Navigation.OnQuestRemoved)=="function" then
+            addon.Navigation:OnQuestRemoved(arg)
+        end
         hideBlizzardTracker()
         if event=="BAG_UPDATE" or event=="BAG_UPDATE_DELAYED" or event=="ITEM_LOCK_CHANGED"
             or event=="GET_ITEM_INFO_RECEIVED" or event=="ITEM_DATA_LOAD_RESULT"
