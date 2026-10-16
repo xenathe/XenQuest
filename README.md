@@ -1,13 +1,22 @@
 # XenQuest
 
-Latest: **v0.2.9-beta — Discord Support & Settings Polish**. See [release notes](RELEASE_NOTES.md).
+Latest: **v0.2.10-beta — Zone Grouping**. See [release notes](RELEASE_NOTES.md).
 A lightweight, customisable quest tracker for World of Warcraft.
+
+## Zone grouping (v0.2.10-beta)
+
+- Quests are grouped by zone using the game client's quest-log headers.
+- The group matching your current zone is shown first and expands automatically. Other groups default to collapsed.
+- Click any zone name to expand or collapse its quests; manual choices are kept until you change zones.
+- Zone headings use a minimalist, background-free text style with an arrow and quest count.
+- If your current zone has no matching quests, the first available group opens by default.
+- Quest contents, progress bars, quest-item shortcuts, completion animations and isometric navigation are unchanged.
 
 ## Community & Support
 
 Join the [official XenQuest Discord](https://discord.gg/96UKh6AeAN) for help, bug reports, feature suggestions and release announcements. In-game, open `/xq` and select **Need help?** in Settings to copy the invite.
 
-## 0.2.3-beta
+## Earlier technical documentation (introduced in v0.2.3-beta)
 
 - Keep incomplete quests above completed quests, preserving quest-log order within each group.
 - Celebrate newly completed quests with a green shimmer and a 1.26-second bounce/glide, then leave their objectives collapsed. Right-click to expand or collapse; automatic collapse does not change saved manual choices.

@@ -1,37 +1,39 @@
-# XenQuest v0.2.9-beta — Discord Support & Settings Polish
+# XenQuest v0.2.10-beta — Zone Grouping
 
-A focused quality-of-life update that improves the settings window and adds a direct route to the official XenQuest community.
+A focused quest-tracker update that keeps your quest list organised by zone while preserving XenQuest's minimal visual style.
 
-## What's New
+## New: Automatic Zone Grouping
 
-### Official Discord Support
-- Added a subtle **Need help?** link alongside the addon version in the settings footer.
-- Clicking it opens an in-game popup containing the official Discord invite, ready to copy and paste into a browser.
-- Community Discord: https://discord.gg/96UKh6AeAN
+- Active quests are grouped beneath their matching zone headings using Blizzard's quest-log grouping data.
+- The **current zone** is displayed first and automatically expanded.
+- Other zone groups start collapsed to keep the tracker compact.
+- Click **any zone heading** to expand or collapse its quests whenever you want.
+- Manual zone expansion/collapse choices are respected until you change zones, at which point the automatic layout resets.
+- If your current zone has no matching tracked quests, XenQuest opens the first available group instead.
 
-### Subtle Rounded Corners
-- Introduced gently rounded (~4 px) corners across the settings window, tabs, dropdowns, control buttons, and support popup.
-- Maintained the existing dark styling, colour themes, spacing, fonts, and compact layout.
+## Design
 
-### Cleaner Settings Controls
-- Added minimal (~3 px) vertical spacing between the four settings option buttons to give each its own distinct visual area.
-- Preserved the overall window size and existing control arrangement.
+- Minimalist zone headings with a small chevron and quest count.
+- Gold highlights the current zone; other zones use muted text.
+- No extra panels, backgrounds, borders or dividers.
+- Subtle spacing keeps the groups visually distinct without clutter.
 
 ## Unchanged
-- Existing quest tracking and objective progress display.
-- Completion animations and automatic collapsing of completed objectives.
-- 64-direction isometric navigation arrow and gold/icy-blue themes.
-- Quest tracking indicators, navigation behaviour and objective guidance.
-- Blizzard's world map remains unchanged. The experimental XenQuest world-map pins are **not included**.
+
+- Quest progress bars, objective descriptions, usable quest items and completion animations.
+- Quest navigation, the 64-frame isometric arrow and premium gold/icy-blue assets.
+- Custom settings, rounded corners and **Need help?** Discord support.
+- Blizzard's native World Map; no XenQuest map overlay is included.
 
 ## Compatibility
-- **Primary client:** World of Warcraft Forever (Interface 16001)
+
+- **Version:** `0.2.10-beta`
+- **Primary client:** World of Warcraft Forever (`Interface 16001`)
 - **Release type:** Beta
-- **Version:** `0.2.9-beta`
-- **Previous public version:** `0.2.8-beta`
+- **Previous public version:** `0.2.9-beta`
 
-## Community
-- Discord: https://discord.gg/96UKh6AeAN
-- GitHub: https://github.com/xenathe/XenQuest
+## Community Support
 
-This release was visually reviewed in-game during development. Please report any new issues on the official XenQuest Discord.
+Report issues and suggest improvements on the [official XenQuest Discord](https://discord.gg/96UKh6AeAN).
+
+*Thanks for supporting XenQuest!*
