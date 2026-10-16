@@ -1,4 +1,4 @@
--- XenQuest 0.2.9-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
+-- XenQuest 0.2.11-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
 -- Never changes the quest log or uses protected quest actions automatically.
 local ADDON_NAME,addon = ...
 local QuestItems,ItemButtons=addon.QuestItems,addon.QuestItemButtons
@@ -26,6 +26,10 @@ local COLORS = {
     background={0.035,0.072,0.10}, surface={0.10,0.17,0.21}, edge={0.20,0.31,0.37},
     gold={0.96,0.77,0.36}, green={0.42,0.84,0.58}, white={0.94,0.96,0.97},
     muted={0.65,0.73,0.76}, barbg={0.16,0.23,0.27}, blue={0.45,0.75,0.91},
+    questTitle={0.96,0.77,0.36}, objectiveText={0.94,0.96,0.97},
+    progress={0.96,0.77,0.36}, zone={0.96,0.77,0.36},
+    navTitle={0.96,0.77,0.36}, navDistance={0.88,0.90,0.72},
+    navGlow={1.00,0.96,0.82},
 }
 local FONTS = {
     {label="Friz Quadrata", path="Fonts\\FRIZQT__.TTF"},
@@ -42,6 +46,56 @@ local DEFAULTS = {
 local NAV_DEFAULTS = {
     x=0,y=-110,scale=1,arrowSize=88,titleSize=13,distanceSize=11,
 }
+-- Theme palettes, separated from rendering. Saved custom colours belong to the
+-- player, while shipped Gold/Ice presets remain unmodified across upgrades.
+local THEME_FIELDS={"accent","questTitle","objectiveText","progress","completed","zone",
+    "navTitle","navDistance","navGlow"}
+local THEME_TO_COLOR={accent="gold",questTitle="questTitle",objectiveText="objectiveText",
+    progress="progress",completed="green",zone="zone",
+    navTitle="navTitle",navDistance="navDistance",navGlow="navGlow"}
+local THEME_PRESETS={
+    gold={accent={0.96,0.77,0.36},questTitle={0.96,0.77,0.36},
+        objectiveText={0.94,0.96,0.97},progress={0.83,0.67,0.34},
+        completed={0.42,0.84,0.58},zone={0.96,0.77,0.36},
+        navTitle={0.96,0.77,0.36},navDistance={0.88,0.90,0.72},
+        navGlow={1.00,0.96,0.82}},
+    ice={accent={0.46,0.82,0.98},questTitle={0.66,0.88,1},
+        objectiveText={0.90,0.96,1},progress={0.43,0.74,0.91},
+        completed={0.42,0.84,0.71},zone={0.46,0.82,0.98},
+        navTitle={0.78,0.90,1.00},navDistance={0.86,0.95,1.00},
+        navGlow={0.90,0.98,1.00}},
+}
+local themeRefreshUI
+local settingsSliderThumbs={}
+local function clonePalette(src)
+    local copy={}
+    for _,key in ipairs(THEME_FIELDS) do
+        local c=src and src[key] or THEME_PRESETS.gold[key]
+        if type(c)~="table" then c=THEME_PRESETS.gold[key] end
+        copy[key]={tonumber(c[1]) or 0,tonumber(c[2]) or 0,tonumber(c[3]) or 0}
+    end
+    return copy
+end
+local function currentPalette()
+    if db.theme=="ice" then return THEME_PRESETS.ice end
+    if db.theme=="custom" then
+        if type(db.customColors)~="table" then db.customColors=clonePalette(THEME_PRESETS.gold) end
+        return db.customColors
+    end
+    return THEME_PRESETS.gold
+end
+local function applyPaletteColours()
+    local palette=currentPalette()
+    for _,field in ipairs(THEME_FIELDS) do
+        local dest=COLORS[THEME_TO_COLOR[field]]
+        local src=palette[field]
+        local fallback=THEME_PRESETS.gold[field]
+        for i=1,3 do
+            local n=(type(src)=="table" and tonumber(src[i])) or fallback[i]
+            dest[i]=math.max(0,math.min(1,n))
+        end
+    end
+end
 local function safe(fn,...)
     if type(fn)~="function" then return nil end
     local ok,a,b,c,d,e,f,g,h=pcall(fn,...)
@@ -91,59 +145,54 @@ local function applyFont(f,size,flags)
     local c=f.xqColor or COLORS.white
     f:SetTextColor(c[1],c[2],c[3])
 end
+-- Settings typography is intentionally independent of the chosen quest font.
+-- This keeps the wider three-tab editor close to the clean reference design.
+local function applyUIFont(fs,size,flags)
+    if not fs then return end
+    local ok,loaded=pcall(fs.SetFont,fs,"Fonts\\ARIALN.TTF",size or 12,flags or "")
+    if not ok or loaded==false then applyFont(fs,size,flags) end
+end
 local function backing(parent,base)
     local tex=solid(parent,"BACKGROUND",base or COLORS.background)
     return tex
 end
--- Small, client-independent rounded backgrounds for the settings UI only.
--- A single 8x8 mask supplies the four 4px corners; the middle remains solid.
--- Unlike masking or newer NineSlice APIs, this works with older WoW clients.
-local ROUNDED_CORNER = "Interface\\AddOns\\XenQuest\\Media\\RoundedCorner"
+-- Draw rounded settings surfaces from solid-colour strips only. Forever can
+-- render missing texture masks as vivid green blocks; generated strips never
+-- depend on external art files and remain compatible with old clients.
+-- A small pixel-radius provides soft, understated corners rather than bevels.
 local function roundedBacking(parent,base,radius,layer,opacity)
-    local r=radius or 4
+    local r=math.max(2,math.min(10,math.floor(radius or 4)))
     local drawLayer=layer or "BACKGROUND"
-    local flats,corners={},{}
-    local function flat()
+    local pieces={}
+    local function piece()
         local t=parent:CreateTexture(nil,drawLayer)
-        flats[#flats+1]=t
+        pieces[#pieces+1]=t
         return t
     end
-    local middle=flat()
+    local middle=piece()
     middle:SetPoint("TOPLEFT",parent,"TOPLEFT",0,-r)
     middle:SetPoint("BOTTOMRIGHT",parent,"BOTTOMRIGHT",0,r)
-    local top=flat()
-    top:SetPoint("TOPLEFT",parent,"TOPLEFT",r,0)
-    top:SetPoint("TOPRIGHT",parent,"TOPRIGHT",-r,0)
-    top:SetHeight(r)
-    local bottom=flat()
-    bottom:SetPoint("BOTTOMLEFT",parent,"BOTTOMLEFT",r,0)
-    bottom:SetPoint("BOTTOMRIGHT",parent,"BOTTOMRIGHT",-r,0)
-    bottom:SetHeight(r)
-
-    -- Texture coordinates address the 4 quadrants of the one rounded mask.
-    local specs={
-        {"TOPLEFT",0,0.5,0,0.5},
-        {"TOPRIGHT",0.5,1,0,0.5},
-        {"BOTTOMLEFT",0,0.5,0.5,1},
-        {"BOTTOMRIGHT",0.5,1,0.5,1},
-    }
-    for _,spec in ipairs(specs) do
-        local t=parent:CreateTexture(nil,drawLayer)
-        t:SetTexture(ROUNDED_CORNER)
-        t:SetSize(r,r)
-        t:SetPoint(spec[1],parent,spec[1],0,0)
-        t:SetTexCoord(spec[2],spec[3],spec[4],spec[5])
-        corners[#corners+1]=t
+    -- The curves are discrete one-pixel scan lines above and below the centre.
+    for i=0,r-1 do
+        local progress=(i+0.5)/r
+        local inset=math.floor(r*(1-math.sqrt(1-(1-progress)^2))+0.5)
+        local top=piece()
+        top:SetPoint("TOPLEFT",parent,"TOPLEFT",inset,-i)
+        top:SetPoint("TOPRIGHT",parent,"TOPRIGHT",-inset,-i)
+        top:SetHeight(1)
+        local bottom=piece()
+        bottom:SetPoint("BOTTOMLEFT",parent,"BOTTOMLEFT",inset,i)
+        bottom:SetPoint("BOTTOMRIGHT",parent,"BOTTOMRIGHT",-inset,i)
+        bottom:SetHeight(1)
     end
-    -- Same colour interface as a Texture, so selected/inactive tab repainting
-    -- continues to use the existing paintTab() logic unchanged.
     local surface={}
     function surface:SetColorTexture(red,green,blue,alpha)
-        alpha=alpha or 1
-        for _,t in ipairs(flats) do t:SetColorTexture(red,green,blue,alpha) end
-        for _,t in ipairs(corners) do t:SetVertexColor(red,green,blue,alpha) end
+        local a=alpha==nil and 1 or alpha
+        for _,t in ipairs(pieces) do
+            t:SetColorTexture(red,green,blue,a)
+        end
     end
-    surface:SetColorTexture(base[1],base[2],base[3],opacity or 1)
+    surface:SetColorTexture(base[1],base[2],base[3],opacity)
     return surface
 end
 
@@ -721,7 +770,7 @@ local function updateRow(row,q,width)
     row.quest=q
     row.bubble.quest=q
     local completed=q.complete
-    local headingColor=completed and COLORS.green or COLORS.gold
+    local headingColor=completed and COLORS.green or COLORS.questTitle
     row.head.xqColor=headingColor
     row.symbol.xqColor=headingColor
     row.symbol:SetText(completed and "?" or "!")
@@ -748,7 +797,9 @@ local function updateRow(row,q,width)
     row.titleButton:ClearAllPoints()
     row.titleButton:SetPoint("TOPLEFT",row,"TOPLEFT",textInset,-2)
     if activelyTracked then
-        local iconName=(db and db.theme=="ice") and "TrackedArrowPremiumIce" or "TrackedArrowPremiumGold"
+        local navigationTheme=db and db.navigation and db.navigation.arrowTheme
+        local isIce=(navigationTheme=="ice") or (navigationTheme~="gold" and db and db.theme=="ice")
+        local iconName=isIce and "TrackedArrowPremiumIce" or "TrackedArrowPremiumGold"
         row.navIcon:SetTexture("Interface\\AddOns\\XenQuest\\Media\\"..iconName)
         row.navIcon:Show()
     else
@@ -784,7 +835,7 @@ local function updateRow(row,q,width)
             w:SetPoint("TOPLEFT",row,"TOPLEFT",26,-yy)
             local widgetWidth=math.max(90,width-32)
             w:SetWidth(widgetWidth)
-            w.text.xqColor=COLORS.white
+            w.text.xqColor=COLORS.objectiveText
             w.amount.xqColor=done and COLORS.green or COLORS.muted
             applyFont(w.text,11)
             applyFont(w.amount,11)
@@ -802,7 +853,7 @@ local function updateRow(row,q,width)
                 w.track:SetPoint("TOPRIGHT",w,"TOPRIGHT",0,-barOffset)
                 w.track:Show()
                 w.fill:SetWidth(math.max(0.01,widgetWidth*math.min(1,math.max(0,count/total))))
-                color(w.fill,done and COLORS.green or COLORS.gold)
+                color(w.fill,done and COLORS.green or COLORS.progress)
                 local itemHeight=barOffset+6+7
                 w:SetHeight(itemHeight)
                 yy=yy+itemHeight
@@ -941,7 +992,7 @@ layoutRows=function(snap)
             end
             header.group=group
             header:SetWidth(width)
-            local textColor=group.isCurrent and COLORS.gold or COLORS.muted
+            local textColor=group.isCurrent and COLORS.zone or COLORS.muted
             header.title.xqColor=textColor
             header.arrow.xqColor=textColor
             header.count.xqColor=COLORS.muted
@@ -1276,7 +1327,8 @@ local function slider(parent,name,min,max,step,y,getValue,setValue,format)
     lab:SetPoint("TOPLEFT",17,y)
     local s=CreateFrame("Slider",nil,parent)
     s:SetPoint("TOPLEFT",17,y-22)
-    s:SetSize(314,15)
+    s:SetHeight(15)
+    s:SetPoint("TOPRIGHT",parent,"TOPRIGHT",-17,y-22)
     s:SetOrientation("HORIZONTAL")
     s:SetMinMaxValues(min,max)
     s:SetValueStep(step)
@@ -1290,6 +1342,7 @@ local function slider(parent,name,min,max,step,y,getValue,setValue,format)
     thumb:SetSize(12,18)
     color(thumb,COLORS.gold)
     s:SetThumbTexture(thumb)
+    settingsSliderThumbs[#settingsSliderThumbs+1]=thumb
     local function update(val)
         local display=format and format(val) or tostring(math.floor(val+0.5))
         lab:SetText(name..": "..display)
@@ -1316,14 +1369,15 @@ local function toggle(parent,whenEnabled,whenDisabled,y,get,set)
     end)
     b:SetPoint("TOPLEFT",17,y)
     -- Preserve all four anchor positions, but give the buttons 3px breathing room.
-    b:SetSize(314,26)
+    b:SetHeight(26)
+    b:SetPoint("TOPRIGHT",parent,"TOPRIGHT",-17,y)
     b.text:SetText(get() and whenEnabled or whenDisabled)
     applyFont(b.text,11)
     return b
 end
 -- A lightweight dropdown avoids Blizzard template differences between clients.
 -- Each font row previews its own font; unavailable custom fonts fall back safely.
-local function settingsDropdown(parent,label,x,y,width,items,currentValue,onChoose)
+local function settingsDropdown(parent,label,x,y,width,items,currentValue,onChoose,openAbove)
     local caption=fontString(parent,11,COLORS.muted)
     caption:SetPoint("TOPLEFT",parent,"TOPLEFT",x,y)
     caption:SetText(label)
@@ -1342,7 +1396,11 @@ local function settingsDropdown(parent,label,x,y,width,items,currentValue,onChoo
     applyFont(arrow,12)
 
     local menu=CreateFrame("Frame",nil,parent)
-    menu:SetPoint("TOPLEFT",button,"BOTTOMLEFT",0,-2)
+    if openAbove then
+        menu:SetPoint("BOTTOMLEFT",button,"TOPLEFT",0,2)
+    else
+        menu:SetPoint("TOPLEFT",button,"BOTTOMLEFT",0,-2)
+    end
     menu:SetSize(width,#items*28+4)
     menu:SetFrameStrata("FULLSCREEN_DIALOG")
     menu:SetFrameLevel(parent:GetFrameLevel()+20)
@@ -1401,11 +1459,13 @@ local function settingsDropdown(parent,label,x,y,width,items,currentValue,onChoo
     return refresh
 end
 local function applyTheme()
-    if db.theme=="ice" then COLORS.gold={0.46,0.82,0.98} else COLORS.gold={0.96,0.77,0.36} end
+    applyPaletteColours()
+    if themeRefreshUI then themeRefreshUI() end
     visualSettings()
     if addon.Navigation and type(addon.Navigation.ApplySettings)=="function" then
         pcall(addon.Navigation.ApplySettings,addon.Navigation)
     end
+    dirty=true
 end
 local function refreshNavigationSettings()
     if addon.Navigation and type(addon.Navigation.ApplySettings)=="function" then
@@ -1415,7 +1475,8 @@ end
 
 local function createSettings()
     settings=CreateFrame("Frame","XenQuestSettings",UIParent)
-    settings:SetSize(372,558)
+    settings:SetSize(580,640)
+    settings:SetClampedToScreen(true)
     settings:SetPoint("CENTER",UIParent,"CENTER")
     settings:SetFrameStrata("DIALOG")
     settings:SetMovable(true)
@@ -1423,13 +1484,13 @@ local function createSettings()
     settings:RegisterForDrag("LeftButton")
     settings:SetScript("OnDragStart",function(self) self:StartMoving() end)
     settings:SetScript("OnDragStop",function(self) self:StopMovingOrSizing() end)
-    roundedBacking(settings,COLORS.background,4)
+    roundedBacking(settings,{0.024,0.057,0.078},6)
 
     local header=CreateFrame("Frame",nil,settings)
     header:SetPoint("TOPLEFT",settings,"TOPLEFT",1,-1)
     header:SetPoint("TOPRIGHT",settings,"TOPRIGHT",-1,-1)
-    header:SetHeight(40)
-    roundedBacking(header,{0.022,0.042,0.062},4)
+    header:SetHeight(38)
+    roundedBacking(header,{0.024,0.057,0.078},6)
 
     local heading=fontString(header,11,COLORS.muted)
     heading:SetPoint("LEFT",header,"LEFT",16,0)
@@ -1449,120 +1510,336 @@ local function createSettings()
     close:SetScript("OnEnter",function() close.text:SetTextColor(1,0.65,0.38) end)
     close:SetScript("OnLeave",function() close.text:SetTextColor(COLORS.white[1],COLORS.white[2],COLORS.white[3]) end)
 
-    -- Both tabs occupy exactly the same width as the darker content panel.
+    -- Classic flat/Zygor-inspired tabs: the active tab receives a narrow
+    -- accent rule, while its surface stays dark to avoid distracting blocks.
     local rail=CreateFrame("Frame",nil,settings)
-    rail:SetPoint("TOPLEFT",settings,"TOPLEFT",12,-46)
-    rail:SetPoint("TOPRIGHT",settings,"TOPRIGHT",-12,-46)
-    rail:SetHeight(32)
+    rail:SetPoint("TOPLEFT",settings,"TOPLEFT",18,-48)
+    rail:SetPoint("TOPRIGHT",settings,"TOPRIGHT",-18,-48)
+    rail:SetHeight(30)
 
     local content=CreateFrame("Frame",nil,settings)
-    content:SetPoint("TOPLEFT",settings,"TOPLEFT",12,-77)
-    content:SetPoint("BOTTOMRIGHT",settings,"BOTTOMRIGHT",-12,43)
-    roundedBacking(content,{0.032,0.062,0.086},4)
-    local topBorder=content:CreateTexture(nil,"BORDER")
-    topBorder:SetColorTexture(0.23,0.38,0.42,0.38)
-    topBorder:SetHeight(1)
-    topBorder:SetPoint("TOPLEFT")
-    topBorder:SetPoint("TOPRIGHT")
-
+    content:SetPoint("TOPLEFT",settings,"TOPLEFT",12,-88)
+    content:SetPoint("BOTTOMRIGHT",settings,"BOTTOMRIGHT",-12,46)
     local pages=CreateFrame("Frame",nil,content)
-    pages:SetPoint("TOPLEFT",content,"TOPLEFT",0,-13)
-    pages:SetPoint("BOTTOMRIGHT",content,"BOTTOMRIGHT",0,10)
+    pages:SetAllPoints(content)
     local trackerPage=CreateFrame("Frame",nil,pages)
     trackerPage:SetAllPoints(pages)
     local navigationPage=CreateFrame("Frame",nil,pages)
     navigationPage:SetAllPoints(pages)
+    local themePage=CreateFrame("Frame",nil,pages)
+    themePage:SetAllPoints(pages)
 
-    -- Tabs sit above the panel edge, with no movement when selected.
-    rail:SetFrameLevel(content:GetFrameLevel()+3)
-    local function makeTab(label)
-        local b=CreateFrame("Button",nil,rail)
-        b:SetHeight(32)
-        b.bg=roundedBacking(b,{0.10,0.17,0.21},4)
-        b.topEdge=b:CreateTexture(nil,"ARTWORK")
-        b.topEdge:SetHeight(2)
-        b.topEdge:SetPoint("TOPLEFT",b,"TOPLEFT",4,0)
-        b.topEdge:SetPoint("TOPRIGHT",b,"TOPRIGHT",-4,0)
-        b.bottomEdge=b:CreateTexture(nil,"ARTWORK")
-        b.bottomEdge:SetHeight(2)
-        b.bottomEdge:SetPoint("BOTTOMLEFT",b,"BOTTOMLEFT")
-        b.bottomEdge:SetPoint("BOTTOMRIGHT",b,"BOTTOMRIGHT")
-        b.text=fontString(b,12,COLORS.white,"CENTER")
-        b.text:SetAllPoints(b)
-        b.text:SetJustifyH("CENTER")
-        b.text:SetJustifyV("MIDDLE")
-        b.text:SetText(label)
-        -- Unlike tracker text, the tab labels use a consistent UI typeface.
-        local ok,loaded=pcall(b.text.SetFont,b.text,"Fonts\\FRIZQT__.TTF",12,"OUTLINE")
-        if not ok or loaded==false then applyFont(b.text,12,"OUTLINE") end
-        return b
-    end
-    local trackerTab=makeTab("Tracker")
-    trackerTab:SetPoint("TOPLEFT",rail,"TOPLEFT",0,0)
-    trackerTab:SetPoint("BOTTOMRIGHT",rail,"BOTTOM",-1,0)
-    local navTab=makeTab("Navigation")
-    navTab:SetPoint("TOPLEFT",rail,"TOP",1,0)
-    navTab:SetPoint("BOTTOMRIGHT",rail,"BOTTOMRIGHT",0,0)
-
+    local tabList={}
+    local sectionHeadings={}
     local activePage="tracker"
-    local function paintTab(button,isActive)
-        color(button.bg,isActive and {0.032,0.062,0.086} or {0.10,0.17,0.21})
-        color(button.topEdge,COLORS.gold,isActive and 1 or 0)
-        color(button.bottomEdge,isActive and {0.032,0.062,0.086} or {0.23,0.38,0.42},isActive and 1 or 0.5)
-        if isActive then
-            button.text:SetTextColor(COLORS.gold[1],COLORS.gold[2],COLORS.gold[3])
-        else
-            button.text:SetTextColor(COLORS.white[1],COLORS.white[2],COLORS.white[3])
-        end
-    end
     local function setTab(name)
         activePage=name
         trackerPage:SetShown(name=="tracker")
         navigationPage:SetShown(name=="navigation")
-        paintTab(trackerTab,name=="tracker")
-        paintTab(navTab,name=="navigation")
+        themePage:SetShown(name=="themes")
+        -- Settings remain 580 x 640 regardless of the active page.
+        -- Never resize the parent during navigation between tabs.
+        if themeRefreshUI then themeRefreshUI() end
     end
-    trackerTab:SetScript("OnClick",function() setTab("tracker") end)
-    navTab:SetScript("OnClick",function() setTab("navigation") end)
+    local function makeTab(label,name,index)
+        local b=CreateFrame("Button",nil,rail)
+        b:SetSize(180,30)
+        b:SetPoint("TOPLEFT",rail,"TOPLEFT",(index-1)*182,0)
+        b.bg=backing(b,{0.095,0.155,0.21})
+        b.rule=b:CreateTexture(nil,"ARTWORK")
+        b.rule:SetPoint("TOPLEFT",b,"TOPLEFT",0,0)
+        b.rule:SetPoint("TOPRIGHT",b,"TOPRIGHT",0,0)
+        b.rule:SetHeight(2)
+        b.text=fontString(b,12,COLORS.muted,"CENTER")
+        b.text:SetAllPoints(b)
+        b.text:SetJustifyV("MIDDLE")
+        b.text:SetText(label)
+        applyUIFont(b.text,12)
+        b:SetScript("OnClick",function() setTab(name) end)
+        tabList[#tabList+1]={frame=b,name=name}
+        return b
+    end
+    local trackerTab=makeTab("Tracker","tracker",1)
+    local navTab=makeTab("Navigation","navigation",2)
+    local themeTab=makeTab("Themes","themes",3)
 
-    slider(trackerPage,"Background opacity",0,100,1,-8,function() return db.opacity*100 end,function(v) db.opacity=v/100 end,function(v) return tostring(math.floor(v+0.5)).."%" end)
-    slider(trackerPage,"UI scale",70,150,5,-53,function() return db.scale*100 end,function(v) db.scale=v/100 end,function(v) return tostring(v).."%" end)
-    slider(trackerPage,"Tracker width",260,520,10,-98,function() return db.width end,function(v) db.width=v end)
-    slider(trackerPage,"Tracker height",200,700,10,-143,function() return db.height end,function(v) db.height=v end)
-    slider(trackerPage,"Font size",10,18,1,-188,function() return db.fontSize end,function(v) db.fontSize=v end)
+    -- Lightweight section headings keep related options together without
+    -- adding panels or moving the tracker itself. Each rule is deliberately
+    -- softer than the selected tab's accent underline.
+    local function section(parent,label,y)
+        local text=fontString(parent,11,COLORS.gold)
+        text:SetPoint("TOPLEFT",parent,"TOPLEFT",17,y)
+        text:SetSize(310,17)
+        text:SetText(label)
+        applyUIFont(text,12)
+        local line=parent:CreateTexture(nil,"ARTWORK")
+        line:SetPoint("TOPLEFT",parent,"TOPLEFT",17,y-20)
+        line:SetPoint("TOPRIGHT",parent,"TOPRIGHT",-17,y-20)
+        line:SetHeight(1)
+        line:SetColorTexture(0.24,0.36,0.42,0.34)
+        sectionHeadings[#sectionHeadings+1]=text
+        return text
+    end
 
-    local fontItems={}
-    for i,f in ipairs(FONTS) do fontItems[#fontItems+1]={value=i,label=f.label,font=f.path} end
-    settingsDropdown(trackerPage,"Font",17,-236,152,fontItems,function() return db.font end,function(v)
-        db.font=v
-        visualSettings()
-    end)
-    settingsDropdown(trackerPage,"Accent theme",179,-236,152,{
-        {value="gold",label="Warm Gold"},
-        {value="ice",label="Icy Blue"},
-    },function() return db.theme end,function(v)
-        db.theme=v
-        applyTheme()
-        paintTab(trackerTab,activePage=="tracker")
-        paintTab(navTab,activePage=="navigation")
-    end)
+    -- TRACKER: split controls by purpose, keeping their current behaviour.
+    section(trackerPage,"Appearance & scale",-6)
+    local trackerOpacitySlider=slider(trackerPage,"Background opacity",0,100,1,-36,function() return db.opacity*100 end,function(v) db.opacity=v/100 end,function(v) return tostring(math.floor(v+0.5)).."%" end)
+    slider(trackerPage,"UI scale",70,150,5,-75,function() return db.scale*100 end,function(v) db.scale=v/100 end,function(v) return tostring(v).."%" end)
 
-    toggle(trackerPage,"Show Blizzard quest tracker","Hide Blizzard quest tracker",-298,function() return db.hideBlizzard end,function(v) db.hideBlizzard=v end)
-    toggle(trackerPage,"Show all quests","Show only watched quests",-327,function() return db.trackedOnly end,function(v) db.trackedOnly=v end)
-    toggle(trackerPage,"Unlock tracker position","Lock tracker position",-356,function() return db.locked end,function(v) db.locked=v end)
-    toggle(trackerPage,"Hide quest item buttons","Show quest item buttons",-385,function() return db.showQuestItems end,function(v)
+    section(trackerPage,"Tracker dimensions",-125)
+    slider(trackerPage,"Tracker width",260,520,10,-154,function() return db.width end,function(v) db.width=v end)
+    slider(trackerPage,"Tracker height",200,700,10,-193,function() return db.height end,function(v) db.height=v end)
+
+    section(trackerPage,"Text sizing",-242)
+    slider(trackerPage,"Quest font size",10,18,1,-271,function() return db.fontSize end,function(v) db.fontSize=v end)
+
+    section(trackerPage,"Quest display & behaviour",-330)
+    toggle(trackerPage,"Show Blizzard quest tracker","Hide Blizzard quest tracker",-355,function() return db.hideBlizzard end,function(v) db.hideBlizzard=v end)
+    toggle(trackerPage,"Show all quests","Show only watched quests",-383,function() return db.trackedOnly end,function(v) db.trackedOnly=v end)
+    toggle(trackerPage,"Unlock tracker position","Lock tracker position",-411,function() return db.locked end,function(v) db.locked=v end)
+    toggle(trackerPage,"Hide quest item buttons","Show quest item buttons",-439,function() return db.showQuestItems end,function(v)
         db.showQuestItems=v
         if not v then ItemButtons:HideActions() else QuestItems:Invalidate() end
     end)
 
-    slider(navigationPage,"Arrow size",64,140,2,-8,function() return db.navigation.arrowSize or NAV_DEFAULTS.arrowSize end,function(v) db.navigation.arrowSize=v; refreshNavigationSettings() end)
-    slider(navigationPage,"Quest title text",11,20,1,-53,function() return db.navigation.titleSize or NAV_DEFAULTS.titleSize end,function(v) db.navigation.titleSize=v; refreshNavigationSettings() end)
-    slider(navigationPage,"Distance text",10,18,1,-98,function() return db.navigation.distanceSize or NAV_DEFAULTS.distanceSize end,function(v) db.navigation.distanceSize=v; refreshNavigationSettings() end)
+    -- NAVIGATION: arrow size and its labels are independent groups.
+    section(navigationPage,"Navigation arrow",-6)
+    slider(navigationPage,"Arrow size",64,140,2,-36,function() return db.navigation.arrowSize or NAV_DEFAULTS.arrowSize end,function(v) db.navigation.arrowSize=v; refreshNavigationSettings() end)
+
+    section(navigationPage,"Objective labels",-110)
+    slider(navigationPage,"Quest title text",11,20,1,-140,function() return db.navigation.titleSize or NAV_DEFAULTS.titleSize end,function(v) db.navigation.titleSize=v; refreshNavigationSettings() end)
+    slider(navigationPage,"Distance text",10,18,1,-183,function() return db.navigation.distanceSize or NAV_DEFAULTS.distanceSize end,function(v) db.navigation.distanceSize=v; refreshNavigationSettings() end)
+
+    section(navigationPage,"Using navigation",-256)
     local navHint=fontString(navigationPage,11,COLORS.muted)
-    navHint:SetPoint("TOPLEFT",17,-145)
-    navHint:SetWidth(314)
-    navHint:SetText("The navigation arrow matches your accent theme. Drag it in-game to move it; choose a quest with the ! icon to navigate.")
+    navHint:SetPoint("TOPLEFT",navigationPage,"TOPLEFT",17,-289)
+    navHint:SetWidth(523)
+    navHint:SetHeight(64)
+    navHint:SetText("Click the ! icon beside a quest to navigate. Drag the isometric arrow in-game to position it wherever you prefer.\n\nThe arrow uses the Gold or Icy Blue artwork to match your chosen theme. Quests without waypoint data may not support navigation.")
     applyFont(navHint,11)
+
+    -- THEME EDITOR: the font family and all colour controls live here.
+    -- Opacity stays solely under Tracker / Appearance & scale.
+    -- Two columns make the controls comfortably fit in the fixed 580x640 window.
+    local function separator(y)
+        local line=themePage:CreateTexture(nil,"ARTWORK")
+        line:SetPoint("TOPLEFT",themePage,"TOPLEFT",7,y)
+        line:SetPoint("TOPRIGHT",themePage,"TOPRIGHT",-7,y)
+        line:SetHeight(1)
+        line:SetColorTexture(0.24,0.36,0.42,0.40)
+    end
+    local function themeLabel(text,y,size,x)
+        local t=fontString(themePage,size or 12,COLORS.white)
+        t:SetPoint("TOPLEFT",themePage,"TOPLEFT",x or 7,y)
+        t:SetText(text)
+        applyUIFont(t,size or 12)
+        return t
+    end
+    themeLabel("Theme presets",-10,12)
+    local cards={}
+    local presetInfo={
+        {name="Warm Gold",mode="gold",x=7},
+        {name="Icy Blue",mode="ice",x=195},
+        {name="Custom",mode="custom",x=383},
+    }
+    for _,entry in ipairs(presetInfo) do
+        local card=CreateFrame("Button",nil,themePage)
+        card:SetSize(172,55)
+        card:SetPoint("TOPLEFT",themePage,"TOPLEFT",entry.x,-34)
+        card.bg=roundedBacking(card,{0.095,0.155,0.21},5)
+        -- Four fixed-size border strips, inset 3px on ALL sides. This avoids
+        -- the inconsistent cross-corner anchors / sub-pixel 1px side strips
+        -- that Forever clipped on different preset cards. No other card
+        -- positioning or palette logic is changed.
+        card.outline={}
+        local function border(anchor,x,y,width,height)
+            local t=card:CreateTexture(nil,"OVERLAY")
+            t:SetSize(width,height)
+            t:SetPoint("TOPLEFT",card,anchor,x,y)
+            card.outline[#card.outline+1]=t
+        end
+        -- Card is 172 x 55. Every 2px strip remains wholly inside the card.
+        border("TOPLEFT",3,-3,166,2)         -- top
+        border("BOTTOMLEFT",3,5,166,2)      -- bottom: top at y=50
+        border("TOPLEFT",3,-5,2,45)         -- left
+        border("TOPRIGHT",-5,-5,2,45)      -- right
+        card.label=fontString(card,13,COLORS.white,"CENTER")
+        card.label:SetAllPoints(card)
+        card.label:SetJustifyV("MIDDLE")
+        card.label:SetText(entry.name)
+        applyUIFont(card.label,13)
+        card:SetScript("OnClick",function()
+            db.theme=entry.mode
+            if entry.mode=="custom" and type(db.customColors)~="table" then
+                db.customColors=clonePalette(THEME_PRESETS.gold)
+            end
+            applyTheme()
+        end)
+        cards[#cards+1]={widget=card,mode=entry.mode}
+    end
+    separator(-103)
+    themeLabel("Typography",-115,12)
+    local fontItems={}
+    for i,f in ipairs(FONTS) do fontItems[#fontItems+1]={value=i,label=f.label,font=f.path} end
+    local refreshFontDropdown=settingsDropdown(themePage,"Quest font family",7,-136,265,fontItems,function() return db.font end,function(v)
+        db.font=v
+        visualSettings()
+    end)
+    local fontHint=themeLabel("Quest font size is adjustable under Tracker.",-160,11,294)
+    fontHint:SetWidth(244)
+    fontHint:SetTextColor(COLORS.muted[1],COLORS.muted[2],COLORS.muted[3])
+    separator(-194)
+    themeLabel("Tracker colours",-204,12)
+    local swatches={}
+    local function chooseColor(field,label)
+        local picker=ColorPickerFrame
+        if not picker then
+            print("|cffff6666XenQuest: colour picker unavailable on this client.|r")
+            return
+        end
+        local current=currentPalette()
+        local previousTheme=db.theme
+        local before=clonePalette(current)
+        local original=before[field]
+        local cancelled=false
+        local function commitPickerColor()
+            if cancelled then return end
+            local r,g,b=safe(picker.GetColorRGB,picker)
+            if type(r)~="number" then return end
+            if db.theme~="custom" then
+                db.customColors=clonePalette(current)
+                db.theme="custom"
+            end
+            db.customColors[field]={math.max(0,math.min(1,r)),
+                math.max(0,math.min(1,g)),math.max(0,math.min(1,b))}
+            applyTheme()
+        end
+        local function restoreColor()
+            cancelled=true
+            if previousTheme=="custom" then db.customColors=before end
+            db.theme=previousTheme
+            applyTheme()
+        end
+        local opened=false
+        if type(picker.SetupColorPickerAndShow)=="function" then
+            opened=pcall(picker.SetupColorPickerAndShow,picker,
+                {r=original[1],g=original[2],b=original[3],
+                hasOpacity=false,swatchFunc=commitPickerColor,cancelFunc=restoreColor})
+        end
+        if not opened then
+            -- Older Forever/Classic branches use fields instead of SetupColorPickerAndShow.
+            picker.func=nil
+            picker.opacityFunc=nil
+            picker.cancelFunc=nil
+            picker:SetColorRGB(original[1],original[2],original[3])
+            picker.func=commitPickerColor
+            picker.cancelFunc=restoreColor
+            picker.hasOpacity=false
+            picker:Show()
+        end
+    end
+    local function colourSwatch(field,label,x,y)
+        themeLabel(label,y,11,x)
+        local chip=CreateFrame("Button",nil,themePage)
+        chip:SetSize(27,21)
+        chip:SetPoint("TOPLEFT",themePage,"TOPLEFT",x+238,y+3)
+        chip.bg=roundedBacking(chip,{1,1,1},4)
+        chip:SetScript("OnClick",function() chooseColor(field,label) end)
+        chip:SetScript("OnEnter",function(self)
+            if GameTooltip then
+                GameTooltip:SetOwner(self,"ANCHOR_LEFT")
+                GameTooltip:SetText("Choose "..label:lower())
+                GameTooltip:Show()
+            end
+        end)
+        chip:SetScript("OnLeave",function() if GameTooltip then GameTooltip:Hide() end end)
+        swatches[#swatches+1]={field=field,widget=chip}
+    end
+    colourSwatch("accent","Accent colour",7,-233)
+    colourSwatch("questTitle","Quest title",286,-233)
+    colourSwatch("objectiveText","Objective text",7,-264)
+    colourSwatch("progress","Progress bar",286,-264)
+    colourSwatch("completed","Completed quest",7,-295)
+    colourSwatch("zone","Zone headings",286,-295)
+
+    separator(-335)
+    themeLabel("Navigation colours",-347,12)
+    colourSwatch("navTitle","Navigation title",7,-376)
+    colourSwatch("navDistance","Distance text",286,-376)
+    colourSwatch("navGlow","Arrow glow",7,-410)
+    local refreshArrowStyle=settingsDropdown(themePage,"Arrow artwork",286,-409,265,{
+        {value="auto",label="Follow theme (Gold / Ice)"},
+        {value="gold",label="Warm Gold"},
+        {value="ice",label="Icy Blue"},
+    },function() return db.navigation.arrowTheme or "auto" end,function(v)
+        db.navigation.arrowTheme=v
+        refreshNavigationSettings()
+        dirty=true -- Tracker active-arrow indicator must match this choice too.
+    end,true)
+    separator(-466)
+    local reset=makeButton(themePage,"Reset theme to defaults",function()
+        db.customColors=nil
+        db.theme="gold"
+        db.navigation.arrowTheme="auto"
+        refreshArrowStyle()
+        applyTheme()
+    end)
+    reset:SetPoint("TOPLEFT",themePage,"TOPLEFT",7,-477)
+    reset:SetPoint("TOPRIGHT",themePage,"TOPRIGHT",-7,-477)
+    reset:SetHeight(27)
+    applyFont(reset.text,11)
+
+    themeRefreshUI=function()
+        if not settings or not db then return end
+        local accent=COLORS.gold
+        for _,entry in ipairs(tabList) do
+            local active=(entry.name==activePage)
+            if active then
+                entry.frame.bg:SetColorTexture(0.045,0.09,0.12,0.92)
+                entry.frame.rule:SetColorTexture(accent[1],accent[2],accent[3],1)
+                entry.frame.text:SetTextColor(accent[1],accent[2],accent[3])
+            else
+                entry.frame.bg:SetColorTexture(0.11,0.19,0.24,0.90)
+                entry.frame.rule:SetColorTexture(accent[1],accent[2],accent[3],0)
+                entry.frame.text:SetTextColor(COLORS.muted[1],COLORS.muted[2],COLORS.muted[3])
+            end
+        end
+        for _,heading in ipairs(sectionHeadings) do
+            heading:SetTextColor(accent[1],accent[2],accent[3])
+        end
+        -- Each preset has its own restrained two-tone palette: a tinted dark
+        -- background and bright primary colour. No decorative Q/*/+ glyphs.
+        local customPrimary=(db.customColors and db.customColors.accent) or THEME_PRESETS.gold.accent
+        for _,entry in ipairs(cards) do
+            local card=entry.widget
+            local active=db.theme==entry.mode
+            local fg,bg
+            if entry.mode=="gold" then
+                fg,bg=THEME_PRESETS.gold.accent,{0.19,0.155,0.083}
+            elseif entry.mode=="ice" then
+                fg,bg=THEME_PRESETS.ice.accent,{0.075,0.16,0.215}
+            else
+                fg,bg=customPrimary,{0.12,0.16,0.19}
+            end
+            card.bg:SetColorTexture(bg[1],bg[2],bg[3],active and 1 or 0.83)
+            card.label:SetTextColor(fg[1],fg[2],fg[3])
+            for _,edge in ipairs(card.outline) do
+                edge:SetColorTexture(fg[1],fg[2],fg[3],active and 0.95 or 0.12)
+            end
+        end
+        local palette=currentPalette()
+        for _,entry in ipairs(swatches) do
+            local c=palette[entry.field] or THEME_PRESETS.gold[entry.field]
+            entry.widget.bg:SetColorTexture(c[1],c[2],c[3],1)
+        end
+        for _,item in ipairs(settingsSliderThumbs) do
+            item:SetColorTexture(accent[1],accent[2],accent[3])
+        end
+        trackerOpacitySlider:SetValue(db.opacity*100)
+        refreshFontDropdown()
+        refreshArrowStyle()
+    end
+    themeRefreshUI()
 
     local footer=CreateFrame("Frame",nil,settings)
     footer:SetPoint("BOTTOMLEFT",settings,"BOTTOMLEFT",12,6)
@@ -1578,7 +1855,7 @@ local function createSettings()
     version:SetPoint("RIGHT",footer,"RIGHT",-2,0)
     version:SetSize(130,26)
     version:SetJustifyV("MIDDLE")
-    local installed=(GetAddOnMetadata and GetAddOnMetadata("XenQuest","Version")) or "0.2.9-beta"
+    local installed=(GetAddOnMetadata and GetAddOnMetadata("XenQuest","Version")) or "0.2.10-beta"
     version:SetText("v"..tostring(installed):gsub("^v",""))
     applyFont(version,10)
 

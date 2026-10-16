@@ -215,8 +215,14 @@ local ISO_CELL=1/ISO_COLUMNS
 local ISO_EDGE=0.5/ATLAS_PIXELS
 local lastMainFrame,lastBlendFrame
 local currentBearing
+local function arrowUsesIce()
+    local choice=db and db.navigation and db.navigation.arrowTheme
+    if choice=="ice" then return true end
+    if choice=="gold" then return false end
+    return db and db.theme=="ice"
+end
 local function activeArrowTexture()
-    return (db and db.theme=="ice") and "Interface\\AddOns\\XenQuest\\Media\\NavigationArrowIso64Ice"
+    return arrowUsesIce() and "Interface\\AddOns\\XenQuest\\Media\\NavigationArrowIso64Ice"
         or "Interface\\AddOns\\XenQuest\\Media\\NavigationArrowIso64"
 end
 local function setSpriteCell(texture,index)
@@ -234,16 +240,28 @@ local function applyThemeAsset()
     arrowBlend:SetTexture(tex)
     arrowGlow:SetTexture(tex)
     arrowBlendGlow:SetTexture(tex)
-    local isIce=(db and db.theme=="ice")
-    title:SetTextColor(isIce and 0.78 or 0.96, isIce and 0.90 or 0.77, isIce and 1.0 or 0.36)
-    distance:SetTextColor(isIce and 0.86 or 0.88, isIce and 0.95 or 0.90, isIce and 1.0 or 0.72)
-    if isIce then
-        arrowGlow:SetVertexColor(0.90,0.98,1.0,1)
-        arrowBlendGlow:SetVertexColor(0.90,0.98,1.0,1)
-    else
-        arrowGlow:SetVertexColor(1.0,0.96,0.82,1)
-        arrowBlendGlow:SetVertexColor(1.0,0.96,0.82,1)
+    local isIce=arrowUsesIce()
+    local preset=(db and db.theme=="ice") and "ice" or "gold"
+    local defaults={
+        gold={navTitle={0.96,0.77,0.36},navDistance={0.88,0.90,0.72},navGlow={1.00,0.96,0.82}},
+        ice={navTitle={0.78,0.90,1.00},navDistance={0.86,0.95,1.00},navGlow={0.90,0.98,1.00}},
+    }
+    local source=defaults[preset]
+    local custom=(db and db.theme=="custom" and type(db.customColors)=="table") and db.customColors or nil
+    local function selected(key)
+        local c=custom and custom[key]
+        if type(c)=="table" and type(c[1])=="number"
+           and type(c[2])=="number" and type(c[3])=="number" then
+            return math.max(0,math.min(1,c[1])),math.max(0,math.min(1,c[2])),math.max(0,math.min(1,c[3]))
+        end
+        local d=source[key]
+        return d[1],d[2],d[3]
     end
+    title:SetTextColor(selected("navTitle"))
+    distance:SetTextColor(selected("navDistance"))
+    local r,g,b=selected("navGlow")
+    arrowGlow:SetVertexColor(r,g,b,1)
+    arrowBlendGlow:SetVertexColor(r,g,b,1)
 end
 local function selectIsometricArrow(relativeAngle)
     if not arrow or not arrowBlend or type(relativeAngle)~="number" then return end
@@ -269,7 +287,7 @@ local function angleDiff(a,b)
 end
 local function shimmerAlpha(relativeAngle)
     local t=(type(GetTime)=="function" and GetTime()) or 0
-    local base=((db and db.theme=="ice") and 0.10 or 0.08)
+    local base=(arrowUsesIce() and 0.10 or 0.08)
     local pulse=(math.sin(t*7+relativeAngle*2.6)+1)*0.5
     return math.min(0.34, base + turnShimmer*0.16 + pulse*0.06)
 end

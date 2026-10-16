@@ -1,4 +1,4 @@
-XenQuest v0.2.10-beta - WoW Forever quest-tracker replacement
+XenQuest v0.2.11-beta - WoW Forever quest-tracker replacement
 ============================================================
 Install the entire XenQuest folder under Interface/AddOns, then restart WoW.
 
@@ -10,6 +10,9 @@ Install the entire XenQuest folder under Interface/AddOns, then restart WoW.
 /xq hide          Hide XenQuest
 
 Features
+- New Themes tab: Gold/Ice/Custom presets, live tracker and navigation colour pickers.
+- Font family, arrow artwork style and theme reset now live under Themes.
+- Fixed-size settings window with organised pages and a clean accent-underline tab.
 - Quests automatically grouped by zone; current zone open by default, others collapsed.
 - Click any zone heading to expand or collapse it; manual choices reset after zone changes.
 - Incomplete quests first; Blizzard quest-log order is retained within each group.
@@ -42,7 +45,7 @@ Compatibility and limitations
   are skipped. See README.md for compatibility details and in-game checks.
 - Title navigation pauses during movement and is unavailable during combat or
   Forever controller mode. Missing/ambiguous quests are never guessed.
-- The tracker supports Blizzard fonts and an optional custom font in Media.
+- The tracker uses Blizzard's native font files; no font files are bundled.
 - You can restore the original tracker by unchecking Hide Blizzard tracker.
 - Do not remove your SavedVariables file when updating.
 

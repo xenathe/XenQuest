@@ -1,7 +1,11 @@
 # XenQuest
 
-Latest: **v0.2.10-beta — Zone Grouping**. See [release notes](RELEASE_NOTES.md).
+Latest: **v0.2.11-beta — Theme Customisation**. See [release notes](RELEASE_NOTES.md).
 A lightweight, customisable quest tracker for World of Warcraft.
+
+## Theme customisation (v0.2.11-beta)
+
+Open `/xq` and choose **Themes** to switch between Warm Gold, Icy Blue, and your own saved Custom palette. Choose colours for tracker text, bars and headings, and set navigation label, distance, and glow colours independently. Select approved Gold/Ice arrow artwork from the same tab. Font family is now in Themes; font size and background opacity remain under Tracker. The settings window has a consistent 580 × 640 layout with a minimal accent-underlined tab bar.
 
 ## Zone grouping (v0.2.10-beta)
 
@@ -16,7 +20,7 @@ A lightweight, customisable quest tracker for World of Warcraft.
 
 Join the [official XenQuest Discord](https://discord.gg/96UKh6AeAN) for help, bug reports, feature suggestions and release announcements. In-game, open `/xq` and select **Need help?** in Settings to copy the invite.
 
-## Earlier technical documentation (introduced in v0.2.3-beta)
+## 0.2.3-beta
 
 - Keep incomplete quests above completed quests, preserving quest-log order within each group.
 - Celebrate newly completed quests with a green shimmer and a 1.26-second bounce/glide, then leave their objectives collapsed. Right-click to expand or collapse; automatic collapse does not change saved manual choices.
