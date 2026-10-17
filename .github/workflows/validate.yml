@@ -1,0 +1,42 @@
+name: XenQuest validation
+
+on:
+  push:
+    branches:
+      - "dev/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate addon source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test the validator
+        run: python -m unittest discover -s Tests -p "test_ci_validation.py" -v
+
+      - name: Validate TOC, sources and ZIP structure
+        run: python Tools/validate_addon.py --zip-out "$RUNNER_TEMP/XenQuest-CI-only.zip"
+
+      - name: Install Lua 5.1 syntax checker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1
+
+      - name: Check Lua syntax
+        run: |
+          find XenQuest -type f -name '*.lua' -print0 | xargs -0 -r -n 1 luac5.1 -p
