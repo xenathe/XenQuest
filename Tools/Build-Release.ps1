@@ -1,7 +1,9 @@
 param([switch]$Public, [switch]$Force)
 . (Join-Path $PSScriptRoot 'Common.ps1')
+. (Join-Path $PSScriptRoot 'Local-Toc.ps1')
 
 $info = Get-XQAddonInfo
+$effective = Get-XQEffectiveToc -AddonInfo $info
 $versions = Join-Path $info.Root 'Versions'
 New-Item -ItemType Directory -Path $versions -Force | Out-Null
 
@@ -42,10 +44,20 @@ try {
             throw "Unsafe archive entry: $relative"
         }
         $entryName = 'XenQuest/' + $relative
-        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-            $archive, $file.FullName, $entryName,
-            [System.IO.Compression.CompressionLevel]::Optimal
-        ) | Out-Null
+        if ($relative -ieq 'XenQuest.toc') {
+            # The Git-tracked TOC excludes local-only datasets. Add entries only
+            # inside this ZIP, and only when the matching files are present.
+            $entry = $archive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+            $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+            $writer = [System.IO.StreamWriter]::new($entry.Open(), $utf8NoBom)
+            try { $writer.Write($effective.Text) }
+            finally { $writer.Dispose() }
+        } else {
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archive, $file.FullName, $entryName,
+                [System.IO.Compression.CompressionLevel]::Optimal
+            ) | Out-Null
+        }
     }
     $archive.Dispose()
     $archive = $null
@@ -53,7 +65,7 @@ try {
     # Check the finished archive before replacing an existing ZIP.
     $archive = [System.IO.Compression.ZipFile]::OpenRead($tempPath)
     $entries = @($archive.Entries | Where-Object { $_.FullName -and -not $_.FullName.EndsWith('/') })
-    if ($entries.Count -lt $info.LuaFiles) { throw 'Package contains fewer files than expected.' }
+    if ($entries.Count -lt $effective.LuaFiles) { throw 'Package contains fewer files than expected.' }
     if (@($entries | Where-Object { -not $_.FullName.StartsWith('XenQuest/') }).Count -gt 0) {
         throw 'Wrong ZIP structure: addon files must be inside XenQuest/.'
     }
@@ -62,6 +74,13 @@ try {
     }
     if (@($entries | Where-Object { $_.FullName.Contains('\') }).Count -gt 0) {
         throw 'Wrong ZIP structure: backslashes are not valid entry separators.'
+    }
+    foreach ($line in ($effective.Text -split "`r?`n")) {
+        $entry = $line.Trim()
+        if ($entry -match '^[^#].*\.lua$' -and
+            -not @($entries | Where-Object { $_.FullName -eq ('XenQuest/' + $entry) }).Count) {
+            throw "TOC references Lua that is missing from ZIP: $entry"
+        }
     }
     $numberOfFiles = $entries.Count
     $archive.Dispose()
@@ -75,7 +94,7 @@ try {
     "$sha  $filename" | Set-Content -LiteralPath $hashPath -Encoding ASCII
 
     Write-Host "PACKAGE: $output" -ForegroundColor Green
-    Write-Host "VERSION: $($info.Version) | FILES: $numberOfFiles | TOC Lua entries: $($info.LuaFiles)"
+    Write-Host "VERSION: $($info.Version) | FILES: $numberOfFiles | TOC Lua entries: $($effective.LuaFiles)"
     Write-Host "SHA256: $sha"
     if (-not $Public) { Write-Host 'LOCAL TEST PACKAGE — not designated as a public release.' -ForegroundColor Yellow }
     if ($warning) { Write-Host $warning -ForegroundColor Yellow }

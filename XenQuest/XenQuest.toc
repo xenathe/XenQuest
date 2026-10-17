@@ -1,0 +1,13 @@
+## Interface: 16001
+## Title: XenQuest
+## Notes: Customisable quest tracker with smooth isometric navigation for WoW Forever.
+## Author: XenQuest
+## Version: 0.2.12-beta
+## SavedVariables: XenQuestDB
+QuestItems.lua
+QuestItemButtons.lua
+BlizzardUI.lua
+Navigation.lua
+Data/QuestGuidance.lua
+ObjectiveGuidance.lua
+Core.lua

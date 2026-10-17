@@ -1,5 +1,26 @@
 # XenQuest
+
+Latest local candidate: **v0.2.12-beta — Intelligent Objective Guidance & Quality of Life**. See [release notes](RELEASE_NOTES.md).
+
+**Local testing only:** bulk quest data has not been cleared for public redistribution. See `THIRD_PARTY_DATA_REVIEW.md`.
 A lightweight, customisable quest tracker for World of Warcraft.
+
+## Theme customisation (v0.2.11-beta)
+
+Open `/xq` and choose **Themes** to switch between Warm Gold, Icy Blue, and your own saved Custom palette. Choose colours for tracker text, bars and headings, and set navigation label, distance, and glow colours independently. Select approved Gold/Ice arrow artwork from the same tab. Font family is now in Themes; font size and background opacity remain under Tracker. The settings window has a consistent 580 × 640 layout with a minimal accent-underlined tab bar.
+
+## Zone grouping (v0.2.10-beta)
+
+- Quests are grouped by zone using the game client's quest-log headers.
+- The group matching your current zone is shown first and expands automatically. Other groups default to collapsed.
+- Click any zone name to expand or collapse its quests; manual choices are kept until you change zones.
+- Zone headings use a minimalist, background-free text style with an arrow and quest count.
+- If your current zone has no matching quests, the first available group opens by default.
+- Quest contents, progress bars, quest-item shortcuts, completion animations and isometric navigation are unchanged.
+
+## Community & Support
+
+Join the [official XenQuest Discord](https://discord.gg/96UKh6AeAN) for help, bug reports, feature suggestions and release announcements. In-game, open `/xq` and select **Need help?** in Settings to copy the invite.
 
 ## 0.2.3-beta
 
@@ -8,7 +29,7 @@ A lightweight, customisable quest tracker for World of Warcraft.
 - Retain quest rows through refreshes, handle removal and rapid completions, and finish animations safely when the tracker is hidden or minimized. Already completed quests do not replay the effect on reload.
 - Show up to two 24-pixel quest-item icons beside the title, with native tooltips, counts, cooldowns and secure click-to-use actions. **Show quest item buttons** is enabled by default in settings.
 - Hide Blizzard tracker roots and their mouse regions, with reversible state and native re-show hooks.
-- Left-click a quest title to open that quest in the native log. Wrapped titles have their own hit region; marker tracking, item actions, right-click collapse and Shift-click sharing retain separate handlers.
+- Left-click a quest title to open that quest in the native log (including completed quests). Right-click a quest to expand or collapse its objectives; its marker and item buttons retain separate actions.
 - Display active quest countdowns beside their titles, including completed quests whose turn-in timer is still running.
 
 Completion animation requires a stable quest ID and an observed incomplete-to-complete transition while the quest is displayed. Clients exposing only log indices still sort and collapse completed quests, without guessing completion transitions. Passing neighbours are briefly masked to prevent overlapping text while rows glide through the list.
@@ -58,7 +79,7 @@ Each root's visibility, alpha and mouse-enabled state are saved. An `OnShow` hoo
 
 Forbidden frames are skipped. Protected roots cannot be hidden during combat; if Blizzard re-shows one, it can remain visible until combat ends. Unprotected roots can still be hidden safely. All restoration waits until combat ends, then applies the latest setting. These guards require verification against Forever's actual frame protection and native update behavior.
 
-Title navigation resolves a stable quest ID at click time through `C_QuestLog.GetLogIndexForQuestID`, `GetQuestLogIndexByID`, or a fresh log scan, validating the returned entry. Legacy navigation uses `ShowUIPanel` (with `ToggleQuestLog`/`Show` fallbacks), `QuestLog_SetSelection` or `SelectQuestLogEntry`, and native detail updates. ID-based clients can use `C_QuestLog.SetSelectedQuest` or `QuestMapFrame_OpenToQuestDetails`. An already-open log stays open, and selection is resolved again after opening. Shift-click links are also checked against the current quest ID.
+Title navigation resolves a stable quest ID at click time through `C_QuestLog.GetLogIndexForQuestID`, `GetQuestLogIndexByID`, or a fresh log scan, validating the returned entry. Legacy navigation uses `ShowUIPanel` (with `ToggleQuestLog`/`Show` fallbacks), `QuestLog_SetSelection` or `SelectQuestLogEntry`, and native detail updates. ID-based clients can use `C_QuestLog.SetSelectedQuest` or `QuestMapFrame_OpenToQuestDetails`. An already-open log stays open, and selection is resolved again after opening. The current build uses uniform left-click-to-open behavior for active and completed quests.
 
 Missing quests or unsupported APIs produce a brief message. Without IDs, only a unique matching title/level at the unchanged stored index is accepted. Title navigation pauses while rows animate or are masked, then resumes using the row's current quest. Navigation is withheld during combat and Forever controller mode; open the native log manually in those cases. The controller guard follows the installed Forever compatibility code's warning about addon-driven quest-log opening.
 
@@ -72,4 +93,4 @@ In-game checklist:
 - Accept, progress, complete and abandon quests; change zones and UI settings, log in and `/reload`. Check continued suppression and native map/minimap tracking.
 - Toggle hiding repeatedly; verify normal Blizzard rows, clicks and tooltips return. Toggle during combat, then leave combat and confirm the latest setting, with no Lua or blocked-action errors. Test disabling the addon followed by reload.
 - Click incomplete and completed titles, including wrapped titles and after sorting. Confirm the exact quest's description, objectives and rewards. Repeat with the log already open and after accepting/abandoning another quest.
-- Try title clicks during the completion animation and after settling. Check marker tracking/tooltips, item use/tooltips, right-click collapse and Shift-click sharing independently; child clicks must not open the log.
+- Try title clicks during the completion animation and after settling. Check marker tracking/tooltips, item use/tooltips, right-click collapse and quest-log opening independently; child clicks must not open the log.
