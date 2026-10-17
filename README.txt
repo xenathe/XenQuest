@@ -1,6 +1,10 @@
-XenQuest v0.2.11-beta - WoW Forever quest-tracker replacement
+XenQuest v0.2.12-beta - WoW Forever quest-tracker replacement
 ============================================================
+LOCAL RELEASE CANDIDATE - do not publish until data licensing is cleared.
 Install the entire XenQuest folder under Interface/AddOns, then restart WoW.
+
+NEW: Scroll large quest lists; left-click opens the quest log and right-click expands/collapses.
+NEW: Intelligent objective guidance and hoverable quest reference summaries.
 
 /xq or /xenquest  Open settings
 /xq all           Show all quests in the quest log
@@ -26,7 +30,7 @@ Features
 - Left-click a quest title to open that quest in Blizzard's quest log.
 - Timed quests show a live countdown beside the title, including timed turn-ins.
 - Right-click a quest row to expand/collapse objectives; markers control tracking.
-- Shift-click quest title to link quest in chat where supported.
+- Quest-title actions are now uniform across completed and active quests.
 - Drag the XenQuest tracker; adjustable width, height, UI scale and font.
 - Fully transparent background at 0% while bars and text remain visible.
 - Settings: opacity, scale, width, height, font family, font size, accent theme,

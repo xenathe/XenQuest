@@ -219,24 +219,14 @@ local function formatStatus(o)
     if count and total and total>0 and count>=total then complete=true end
     return description,count,total,complete
 end
--- Deliberately small, verified guidance map. Unknown objectives keep the game text;
--- guessing enemy/drop associations would be misleading. More entries can be
--- added safely as guide data is verified for the Forever client.
-local OBJECTIVE_HINTS = {
-    ["zenn's bidding"] = {
-        ["nightsaber fang"] = "Kill Nightsabers to collect Nightsaber Fangs",
-        ["strigid owl feather"] = "Kill Strigid Owls to collect Strigid Owl Feathers",
-        ["webwood spider silk"] = "Kill Webwood Spiders to collect Webwood Spider Silk",
-    },
-}
+-- Verified records are resolved by the dedicated guidance module.
+-- Unknown quests and objective labels always fall back to the game's text.
 local function objectiveDescription(quest,raw)
-    if type(raw)~="string" then return raw end
-    local hints=OBJECTIVE_HINTS[(quest.title or ""):lower()]
-    if not hints then return raw end
-    -- Quest objectives may include a trailing Blizzard progress counter.
-    local key=raw:lower():gsub("%s*:%s*%d+%s*/%s*%d+%s*$", "")
-    key=key:gsub("^%s+", ""):gsub("%s+$", "")
-    return hints[key] or raw
+    local guidance=addon.ObjectiveGuidance
+    if guidance and type(guidance.Describe)=="function" then
+        return guidance:Describe(quest,raw)
+    end
+    return raw
 end
 
 -- Objective presentation: distinguish measurable counters, profession training,
@@ -437,7 +427,8 @@ local function snapshot()
             watched=safe(C_QuestLog.IsQuestWatched,e.id)==true
         end
         -- Some Forever builds expose log entries but no watch-list API.
-        if not db.trackedOnly or watched or (not watchAPIAvailable) then
+        local shouldDisplay=not db.trackedOnly or watched or (not watchAPIAvailable)
+        if shouldDisplay or db.guidanceCaptureEnabled then
             e.watched=watched==true
             local objectives={}
             if e.id and C_QuestLog and C_QuestLog.GetQuestObjectives then
@@ -452,13 +443,19 @@ local function snapshot()
                 end
             end
             e.objectives=objectives
-            e.items=db.showQuestItems and QuestItems:ForQuest(e) or {}
-            -- A descriptive objective may be the only quest objective.
-            if #objectives==0 and e.id and C_QuestLog and C_QuestLog.GetQuestLogQuestText then
-                local txt=safe(C_QuestLog.GetQuestLogQuestText,e.id)
-                if type(txt)=="string" then e.description=txt end
+            local guidance=addon.ObjectiveGuidance
+            if guidance and type(guidance.Capture)=="function" and db.guidanceCaptureEnabled then
+                guidance:Capture(e)
             end
-            result[#result+1]=e
+            if shouldDisplay then
+                e.items=db.showQuestItems and QuestItems:ForQuest(e) or {}
+                -- A descriptive objective may be the only quest objective.
+                if #objectives==0 and e.id and C_QuestLog and C_QuestLog.GetQuestLogQuestText then
+                    local txt=safe(C_QuestLog.GetQuestLogQuestText,e.id)
+                    if type(txt)=="string" then e.description=txt end
+                end
+                result[#result+1]=e
+            end
         end
     end
     return result,entries
@@ -516,6 +513,29 @@ local function markerTooltip(marker)
     end
     GameTooltip:Show()
 end
+-- Allow the world to receive right-button presses for camera turning while
+-- keeping left-click quest actions and scrolling. This client API can be
+-- restricted during combat, so configure once at creation and retry later.
+-- Do not use SetPropagateMouseClicks: it also passes left clicks to the world.
+local function allowRightMouseLook(frame)
+    if not frame or frame.xqRightMouseThrough then return end
+    if type(frame.SetPassThroughButtons)~="function" then return end
+    if InCombatLockdown and InCombatLockdown() then return end
+    local ok=pcall(frame.SetPassThroughButtons,frame,"RightButton")
+    if ok then frame.xqRightMouseThrough=true end
+end
+local function toggleQuestObjectives(q)
+    if not q then return end
+    local key=tostring(q.id or q.index)
+    local collapsed=not isCollapsed(q)
+    db.collapsed[key]=collapsed
+    if q.complete and q.state then q.state.manualCollapsed=collapsed end
+    dirty=true
+end
+local function openQuestInLog(q)
+    local ok,message=BlizzardUI:OpenQuest(q,questTitleFromLog)
+    if not ok then print("|cffe8bb59XenQuest|r "..tostring(message)) end
+end
 local QUEST_RING="Interface\\AddOns\\XenQuest\\Media\\QuestRing"
 local SETTINGS_GEAR="Interface\\AddOns\\XenQuest\\Media\\SettingsGear"
 local function shareQuest(q)
@@ -526,33 +546,73 @@ local function titleCanNavigate(row)
     return row.quest and not row.motion and not row.returnMotion and not row.quest.state.animation
         and (row.paintAlpha or 1)>0.95
 end
+-- Mouse wheel must work over quest buttons, not only the ScrollFrame's
+-- otherwise-empty pixels. ScrollFrame children swallow the parent's wheel.
+local function scrollQuestList(delta)
+    if not tracker or not tracker.scroll or db.minimized then return end
+    local viewport=tracker.scroll:GetHeight() or 0
+    local content=tracker.content:GetHeight() or 0
+    local maxScroll=math.max(0,content-viewport)
+    local before=tracker.scroll:GetVerticalScroll() or 0
+    local nextScroll=math.max(0,math.min(maxScroll,before-(delta or 0)*49))
+    tracker.scroll:SetVerticalScroll(nextScroll)
+    if tracker.scrollbar and maxScroll>0 then
+        tracker.scrollbar:SetValue(nextScroll)
+    end
+    ItemButtons:Sync(tracker,db)
+end
+local function attachQuestWheel(frame)
+    if not frame or type(frame.EnableMouseWheel)~="function" then return end
+    frame:EnableMouseWheel(true)
+    frame:SetScript("OnMouseWheel",function(self,delta) scrollQuestList(delta) end)
+end
 local function createRow(parent)
     local row=CreateFrame("Button",nil,parent)
     row:SetHeight(54)
     row:EnableMouse(true)
+    -- The quest surface handles right-click collapse; unoccupied tracker areas
+    -- continue to pass right-drag through for camera movement.
     row.head=fontString(row,13,COLORS.gold)
     row.head:SetPoint("TOPLEFT",26,-2)
     row.head:SetJustifyV("TOP")
     row.titleButton=CreateFrame("Button",nil,row)
     row.titleButton:SetPoint("TOPLEFT",row,"TOPLEFT",26,-2)
     row.titleButton:RegisterForClicks("LeftButtonUp","RightButtonUp")
-    row.titleButton:SetScript("OnMouseDown",function(self)
-        self.pressedKey=titleCanNavigate(row) and row.quest.key or nil
+    -- Optional quest-level context for the full Forever database. It is the
+    -- source's objective summary, not a guessed replacement for live progress.
+    -- Guard by both quest ID and title to avoid Forever custom-ID collisions.
+    row.titleButton:SetScript("OnEnter",function(self)
+        local q=row.quest
+        if not GameTooltip or not q or not q.id or (db and db.helpfulObjectives==false) then return end
+        local entries=addon.QuestContext
+        local record=entries and entries[tonumber(q.id)]
+        if not record or type(record.title)~="string" or type(record.text)~="string"
+            or record.title:lower()~=tostring(q.title or ""):lower() then return end
+        GameTooltip:SetOwner(self,"ANCHOR_LEFT")
+        GameTooltip:SetText(q.title,1,0.83,0.44)
+        GameTooltip:AddLine("Quest objective reference",0.75,0.85,0.91)
+        GameTooltip:AddLine(record.text,0.96,0.96,0.90,true)
+        GameTooltip:Show()
+    end)
+    row.titleButton:SetScript("OnLeave",function(self)
+        if GameTooltip and GameTooltip.IsOwned and GameTooltip:IsOwned(self) then
+            GameTooltip:Hide()
+        end
+    end)
+    row.titleButton:SetScript("OnMouseDown",function(self,button)
+        self.pressedKey=((button=="LeftButton" or button=="RightButton") and titleCanNavigate(row)) and row.quest.key or nil
     end)
     row.titleButton:SetScript("OnClick",function(self,button)
         local pressed=self.pressedKey
         self.pressedKey=nil
         if not row.quest or pressed~=row.quest.key or not titleCanNavigate(row) then return end
-        if button=="RightButton" then row:GetScript("OnClick")(row,button);return end
-        if IsShiftKeyDown and IsShiftKeyDown() then shareQuest(row.quest);return end
-        -- Completed quests can be expanded/collapsed with a normal title click.
-        -- Incomplete quest titles still open the quest log as before.
-        if row.quest.complete then
-            row:GetScript("OnClick")(row,"RightButton")
-            return
+        if button=="RightButton" then
+            toggleQuestObjectives(row.quest)
+        elseif button=="LeftButton" then
+            -- Identical action for active and completed quests, with no
+            -- modifiers required. Right-click owns expand/collapse.
+            openQuestInLog(row.quest)
         end
-        local ok,message=BlizzardUI:OpenQuest(row.quest,questTitleFromLog)
-        if not ok then print("|cffe8bb59XenQuest|r "..message) end
     end)
     row.shimmer=row:CreateTexture(nil,"OVERLAY")
     row.shimmer:SetTexture("Interface\\AddOns\\XenQuest\\Media\\CompletionShimmer")
@@ -572,11 +632,12 @@ local function createRow(parent)
     row.bubble.ring:SetAllPoints(row.bubble)
     row.bubble.ring:Hide()
     row.bubble:EnableMouse(true)
-    row.bubble:RegisterForClicks("LeftButtonUp")
+    row.bubble:RegisterForClicks("LeftButtonUp","RightButtonUp")
     row.bubble:SetScript("OnEnter",function(self) markerTooltip(self) end)
     row.bubble:SetScript("OnLeave",function(self) if GameTooltip then GameTooltip:Hide() end end)
-    row.bubble:SetScript("OnClick",function(self)
+    row.bubble:SetScript("OnClick",function(self,button)
         local q=self.quest
+        if button=="RightButton" then toggleQuestObjectives(q);return end
         if not q or not q.id then return end
         local nav=addon.Navigation
         local current=(nav and type(nav.GetSelectedQuestID)=="function")
@@ -616,23 +677,18 @@ local function createRow(parent)
     row.navIcon:SetPoint("TOPLEFT",row,"TOPLEFT",-28,-5)
     row.navIcon:Hide()
     row.objectives={}
-    row:SetScript("OnClick",function(self,btn)
+    row:SetScript("OnClick",function(self,button)
         if not self.quest then return end
-        if IsShiftKeyDown and IsShiftKeyDown() then
-            shareQuest(self.quest)
-            return
+        if button=="RightButton" then
+            toggleQuestObjectives(self.quest)
+        elseif button=="LeftButton" then
+            openQuestInLog(self.quest)
         end
-        if btn=="RightButton" then
-            local key=tostring(self.quest.id or self.quest.index)
-            local collapsed=not isCollapsed(self.quest)
-            db.collapsed[key]=collapsed
-            if self.quest.complete then self.quest.state.manualCollapsed=collapsed end
-        else
-            db.primaryQuest=(self.quest and (self.quest.id or self.quest.index)) or 0
-        end
-        dirty=true
     end)
     row:RegisterForClicks("LeftButtonUp","RightButtonUp")
+    attachQuestWheel(row)
+    attachQuestWheel(row.titleButton)
+    attachQuestWheel(row.bubble)
     return row
 end
 -- Minimalist zone headings: no backgrounds, borders, dividers, or lines.
@@ -641,7 +697,9 @@ local function createZoneHeader(parent)
     local z=CreateFrame("Button",nil,parent)
     z:SetHeight(20)
     z:EnableMouse(true)
+    allowRightMouseLook(z)
     z:RegisterForClicks("LeftButtonUp")
+    attachQuestWheel(z)
 
     z.arrow=fontString(z,11,COLORS.gold,"CENTER")
     z.arrow:SetPoint("LEFT",z,"LEFT",0,0)
@@ -806,6 +864,12 @@ local function updateRow(row,q,width)
         row.navIcon:Hide()
     end
     local itemWidth=ItemButtons:UpdateRow(row,q,db.showQuestItems)
+    -- Quest item slots can sit above their rows as independent mouse targets.
+    -- Apply the same right-only passthrough to their ordinary and secure layers.
+    for _,slot in ipairs(row.itemSlots or {}) do
+        allowRightMouseLook(slot)
+        allowRightMouseLook(slot.action)
+    end
     row.head:SetWidth(math.max(80,width-32-itemWidth))
     -- Subtle emphasis: standard Blizzard font with a light monochrome outline.
     applyFont(row.head,13,"OUTLINE")
@@ -840,11 +904,25 @@ local function updateRow(row,q,width)
             applyFont(w.text,11)
             applyFont(w.amount,11)
             local hasCount=showBar
-            local countWidth=hasCount and 45 or 0
-            w.text:SetWidth(widgetWidth-countWidth-5)
+            local statusText=hasCount and (tostring(count).."/"..tostring(total)) or (done and "Done" or "")
+            -- The old 45px counter slot could wrap values such as 10/10 onto
+            -- the progress bar. Measure at full width first, then reserve a
+            -- right-aligned, single-line slot for the entire status string.
+            w.amount:SetWidth(widgetWidth)
+            w.amount:SetText(statusText)
+            local countWidth=0
+            if statusText~="" then
+                local naturalWidth=safe(w.amount.GetUnboundedStringWidth,w.amount)
+                if type(naturalWidth)~="number" or naturalWidth<=0 then
+                    naturalWidth=safe(w.amount.GetStringWidth,w.amount)
+                end
+                local measured=type(naturalWidth)=="number" and naturalWidth or 52
+                local required=math.max(62,math.ceil(measured+10))
+                countWidth=math.min(required,math.max(42,widgetWidth-70))
+            end
             w.amount:SetWidth(countWidth)
+            w.text:SetWidth(math.max(35,widgetWidth-countWidth-(countWidth>0 and 5 or 0)))
             w.text:SetText(objectiveDescription(q,description))
-            w.amount:SetText(hasCount and (count.."/"..total) or (done and "Done" or ""))
             local textHeight=measuredHeight(w.text,14)
             if hasCount then
                 local barOffset=textHeight+5
@@ -940,7 +1018,25 @@ local function updateScrollExtent()
     tracker.content:SetHeight(math.max(1,extent))
     local maxScroll=math.max(0,extent-tracker.scroll:GetHeight())
     local scroll=tracker.scroll:GetVerticalScroll() or 0
-    if scroll>maxScroll then tracker.scroll:SetVerticalScroll(maxScroll) end
+    if scroll>maxScroll then
+        scroll=maxScroll
+        tracker.scroll:SetVerticalScroll(scroll)
+    end
+    if tracker.scrollbar then
+        local canScroll=maxScroll>3 and not db.minimized
+        tracker.scrollbar:SetMinMaxValues(0,math.max(1,maxScroll))
+        -- Show a proportional thumb, like a normal scrollbar. Keep a small
+        -- minimum so even a very long quest log remains easy to drag.
+        if tracker.scrollThumb and canScroll then
+            local viewport=math.max(1,tracker.scroll:GetHeight() or 0)
+            local thumbHeight=math.max(24,viewport*viewport/math.max(viewport,extent))
+            tracker.scrollThumb:SetHeight(math.min(math.max(6,viewport-6),thumbHeight))
+            tracker.scrollThumb:SetColorTexture(COLORS.gold[1],COLORS.gold[2],COLORS.gold[3],0.85)
+        end
+        tracker.scrollbar:SetValue(canScroll and scroll or 0)
+        tracker.scrollbar:SetShown(canScroll)
+        if tracker.scrollRail then tracker.scrollRail:SetShown(canScroll) end
+    end
 end
 local function presentRows()
     -- A 12px sidestep cannot pass a full-width neighbour without intersecting it.
@@ -1190,10 +1286,102 @@ local function render()
     else tracker.empty:Hide() end
     hideBlizzardTracker()
 end
+-- Keep the player's saved position independent of any extra action bars.
+-- Blizzard's right-side bars can overlap the tracker, including the objective
+-- counters, after a UI layout change. We only move the *displayed* tracker,
+-- never db.x/db.y; hiding the bars restores the player's chosen position.
+local RIGHT_ACTION_BARS={"MultiBarRight","MultiBarLeft","MultiBar5","MultiBar6","MultiBar7"}
+local ACTION_BAR_GAP=12
+local anchoredX,anchoredY
+
+local function scaledBounds(frame,parentScale)
+    if not frame or type(frame.GetEffectiveScale)~="function" then return end
+    local scale=frame:GetEffectiveScale()
+    local l,r,t,b=frame:GetLeft(),frame:GetRight(),frame:GetTop(),frame:GetBottom()
+    if not scale or scale<=0 or not l or not r or not t or not b then return end
+    local factor=scale/parentScale
+    return l*factor,r*factor,t*factor,b*factor
+end
+
+local function trackerAnchorX()
+    if not tracker or not db then return end
+    local desiredX=db.x
+    -- The bars do not necessarily exist when ADDON_LOADED fires. A periodic
+    -- refresh picks them up once Blizzard has laid out the action bars.
+    local scale=UIParent:GetEffectiveScale()
+    local parentLeft,parentRight=UIParent:GetLeft(),UIParent:GetRight()
+    local parentTop=UIParent:GetTop()
+    if not scale or scale<=0 or not parentLeft or not parentRight or not parentTop then
+        return desiredX
+    end
+    local width=(tracker:GetWidth() or 0)*tracker:GetEffectiveScale()/scale
+    -- Use the expanded height even while minimised so the header never
+    -- jumps sideways when quests are collapsed or reopened.
+    local height=(db.height or tracker:GetHeight() or 0)*tracker:GetEffectiveScale()/scale
+    local savedRight=parentRight+db.x
+    local savedLeft=savedRight-width
+    local savedTop=parentTop+db.y
+    local savedBottom=savedTop-height
+    local rightLimit=savedRight
+    for _,name in ipairs(RIGHT_ACTION_BARS) do
+        local bar=_G[name]
+        if bar and bar.IsVisible and bar:IsVisible() then
+            local l,r,t,b=scaledBounds(bar,scale)
+            if l and r>l and t>b then
+                local barWidth,barHeight=r-l,t-b
+                -- Only avoid vertical bars along the right edge. Do not let
+                -- horizontal bottom bars or UI elements elsewhere on-screen
+                -- unexpectedly shove the quest tracker across the display.
+                local onRight=r>=parentRight-math.min(240,(parentRight-parentLeft)*0.28)
+                local vertical=barHeight>=100 and barHeight>barWidth*1.35
+                local overlapY=b<savedTop and t>savedBottom
+                local overlapX=l<savedRight+ACTION_BAR_GAP and r>savedLeft
+                if onRight and vertical and overlapY and overlapX then
+                    rightLimit=math.min(rightLimit,l-ACTION_BAR_GAP)
+                end
+            end
+        end
+    end
+    -- Never push the tracker off the left side of the screen. On very narrow
+    -- displays the player can still reduce tracker width through settings.
+    if rightLimit<savedRight then
+        rightLimit=math.max(rightLimit,parentLeft+width+6)
+    end
+    return desiredX+(rightLimit-savedRight)
+end
+
+-- Re-anchor at the stored TOPRIGHT position (with transient action-bar space).
+-- The force path also prevents Forever from inheriting a stale screen-clamp
+-- offset when the tracker is expanded or minimised.
+local function restoreTrackerAnchor()
+    if not tracker or not db then return end
+    local x=trackerAnchorX() or db.x
+    tracker:SetClampedToScreen(false)
+    tracker:ClearAllPoints()
+    tracker:SetPoint("TOPRIGHT",UIParent,"TOPRIGHT",x,db.y)
+    anchoredX,anchoredY=x,db.y
+end
+
+local function refreshActionBarAvoidance()
+    if not tracker or not db or tracker.xqDragging then return end
+    local x=trackerAnchorX() or db.x
+    if not anchoredX or math.abs(x-anchoredX)>0.5 or anchoredY~=db.y then
+        restoreTrackerAnchor()
+    end
+end
 local function visualSettings()
     if not tracker then return end
-    tracker:SetSize(db.width+NAV_MARKER_GUTTER,db.minimized and 36 or db.height)
+    local height=db.height
+    local parentHeight=UIParent:GetHeight()
+    if parentHeight and parentHeight>0 then
+        -- Keep the scrollable window above the bottom of the screen even if
+        -- the user's saved top-right anchor is well below the top edge.
+        local available=(parentHeight+math.min(0,db.y)-12)/math.max(0.1,db.scale)
+        height=math.min(height,math.max(82,available))
+    end
+    tracker:SetSize(db.width+NAV_MARKER_GUTTER,db.minimized and 36 or height)
     tracker:SetScale(db.scale)
+    restoreTrackerAnchor()
     color(tracker.background,COLORS.background,db.opacity)
     tracker.edge:SetAlpha(db.opacity)
     tracker.header:SetShown(db.showHeader)
@@ -1203,6 +1391,10 @@ local function visualSettings()
     tracker.scroll:SetPoint("TOPLEFT",9,-inset)
     tracker.scroll:SetPoint("BOTTOMRIGHT",-12,10)
     tracker.scroll:SetShown(not db.minimized)
+    if db.minimized then
+        if tracker.scrollbar then tracker.scrollbar:Hide() end
+        if tracker.scrollRail then tracker.scrollRail:Hide() end
+    end
     if tracker.collapse and tracker.collapse.text then
         tracker.collapse.text:SetText(db.minimized and "+" or "-")
     end
@@ -1214,19 +1406,29 @@ local function createTracker()
     tracker=CreateFrame("Frame","XenQuestTracker",UIParent)
     tracker:SetSize(db.width+NAV_MARKER_GUTTER,db.minimized and 36 or db.height)
     tracker:SetScale(db.scale)
+    tracker:SetClampedToScreen(false)
     tracker:SetPoint("TOPRIGHT",UIParent,"TOPRIGHT",db.x,db.y)
     tracker:SetFrameStrata("LOW")
     tracker:SetScript("OnHide",function() ItemButtons:HideActions();finishAnimations();dirty=true end)
     tracker:SetScript("OnShow",function() finishAnimations();completionBaseline=true;dirty=true end)
     tracker:SetMovable(true)
-    tracker:SetClampedToScreen(true)
+    -- Whole-frame clamping on Forever can re-anchor the tracker when its
+    -- height shrinks from the full quest list to the 36px minimised header.
+    -- Keep the TOPRIGHT anchor stable through size changes; clamp its header
+    -- when the player finishes dragging instead of clamping the full frame.
+    tracker:SetClampedToScreen(false)
     tracker:EnableMouse(true)
+    allowRightMouseLook(tracker)
     tracker:RegisterForDrag("LeftButton")
     tracker:SetScript("OnDragStart",function(self)
-        if not db.locked and not (InCombatLockdown and InCombatLockdown()) then self:StartMoving() end
+        if not db.locked and not (InCombatLockdown and InCombatLockdown()) then
+            self.xqDragging=true
+            self:StartMoving()
+        end
     end)
     tracker:SetScript("OnDragStop",function(self)
         self:StopMovingOrSizing()
+        self.xqDragging=false
         -- GetRight/GetTop are in the frame's own effective scale. Convert
         -- both rectangles to screen pixels first, then back to parent units.
         -- This preserves the exact drop position at any UI/tracker scale.
@@ -1239,8 +1441,20 @@ local function createTracker()
         if right and top and parentRight and parentTop and parentScale>0 then
             db.x=(right*frameScale-parentRight*parentScale)/parentScale
             db.y=(top*frameScale-parentTop*parentScale)/parentScale
-            self:ClearAllPoints()
-            self:SetPoint("TOPRIGHT",UIParent,"TOPRIGHT",db.x,db.y)
+            -- Clamp against the VISIBLE HEADER rather than the whole quest
+            -- panel, which may legitimately extend below the screen.
+            -- All offsets here are in UIParent units, accounting for scale.
+            local parentWidth=UIParent:GetWidth()
+            local parentHeight=UIParent:GetHeight()
+            if parentWidth and parentWidth>0 then
+                local width=self:GetWidth()*frameScale/parentScale
+                db.x=math.max(math.min(0,width-parentWidth),math.min(0,db.x))
+            end
+            if parentHeight and parentHeight>0 then
+                local headerHeight=36*frameScale/parentScale
+                db.y=math.max(math.min(0,headerHeight-parentHeight),math.min(0,db.y))
+            end
+            restoreTrackerAnchor()
         end
     end)
     tracker.background=backing(tracker,COLORS.background)
@@ -1250,13 +1464,16 @@ local function createTracker()
     tracker.edge:SetPoint("TOPRIGHT",0,0)
     tracker.edge:SetHeight(1)
     tracker.header=CreateFrame("Frame",nil,tracker)
+    allowRightMouseLook(tracker.header)
     tracker.header:SetHeight(28)
+    attachQuestWheel(tracker.header)
     tracker.header:SetPoint("TOPLEFT",8,-5)
     tracker.header:SetPoint("TOPRIGHT",-8,-5)
     -- Minimal tracker header: quest count and controls only.
     tracker.count=fontString(tracker.header,10,COLORS.muted)
     tracker.count:SetPoint("TOPRIGHT",-29,-7)
     local gear=CreateFrame("Button",nil,tracker.header)
+    allowRightMouseLook(gear)
     gear:SetSize(24,24)
     gear:SetPoint("TOPRIGHT",0,2)
     gear.icon=gear:CreateTexture(nil,"ARTWORK")
@@ -1274,6 +1491,7 @@ local function createTracker()
     end)
     gear:SetScript("OnClick",function() if settings then settings:SetShown(not settings:IsShown()) end end)
     local collapse=CreateFrame("Button",nil,tracker.header)
+    allowRightMouseLook(collapse)
     collapse:SetSize(27,27)
     collapse:SetPoint("RIGHT",gear,"LEFT",-2,0)
     collapse.text=fontString(collapse,23,COLORS.muted,"CENTER")
@@ -1300,17 +1518,50 @@ local function createTracker()
     tracker.count:ClearAllPoints()
     tracker.count:SetPoint("TOPRIGHT",collapse,"TOPLEFT",-5,-5)
     tracker.scroll=CreateFrame("ScrollFrame",nil,tracker)
+    allowRightMouseLook(tracker.scroll)
     tracker.scroll:EnableMouseWheel(true)
     tracker.content=CreateFrame("Frame",nil,tracker.scroll)
+    allowRightMouseLook(tracker.content)
     tracker.content:SetSize(db.width-28+NAV_MARKER_GUTTER,1)
     tracker.scroll:SetScrollChild(tracker.content)
     tracker.scroll:SetScript("OnMouseWheel",function(self,delta)
-        local current=self:GetVerticalScroll() or 0
-        local visible=self:GetHeight() or 100
-        local total=tracker.content:GetHeight() or 1
-        self:SetVerticalScroll(math.max(0,math.min(math.max(0,total-visible),current-delta*55)))
-        ItemButtons:Sync(tracker,db)
+        scrollQuestList(delta)
     end)
+    -- Minimal, unobtrusive scrollbar. Shows only when quests overflow.
+    local rail=CreateFrame("Frame",nil,tracker)
+    rail:SetPoint("TOPLEFT",tracker.scroll,"TOPRIGHT",0,0)
+    rail:SetPoint("BOTTOMLEFT",tracker.scroll,"BOTTOMRIGHT",0,0)
+    rail:SetWidth(7)
+    local railBG=rail:CreateTexture(nil,"BACKGROUND")
+    railBG:SetAllPoints(rail)
+    railBG:SetColorTexture(0.42,0.51,0.57,0.18)
+    local slider=CreateFrame("Slider",nil,rail)
+    slider:SetAllPoints(rail)
+    slider:SetOrientation("VERTICAL")
+    slider:SetMinMaxValues(0,0)
+    slider:SetValueStep(1)
+    local thumb=slider:CreateTexture(nil,"OVERLAY")
+    thumb:SetColorTexture(COLORS.gold[1],COLORS.gold[2],COLORS.gold[3],0.8)
+    thumb:SetSize(4,34)
+    slider:SetThumbTexture(thumb)
+    slider:SetScript("OnValueChanged",function(self,value)
+        local visible=tracker.scroll:GetHeight() or 0
+        local maximum=math.max(0,(tracker.content:GetHeight() or 0)-visible)
+        -- Values now follow the content offset: zero is the top; scrolling
+        -- down increases both the offset and the thumb's vertical position.
+        local offset=math.max(0,math.min(maximum,value or 0))
+        if math.abs((tracker.scroll:GetVerticalScroll() or 0)-offset)>0.5 then
+            tracker.scroll:SetVerticalScroll(offset)
+            ItemButtons:Sync(tracker,db)
+        end
+    end)
+    attachQuestWheel(slider)
+    attachQuestWheel(rail)
+    slider:Hide()
+    rail:Hide()
+    tracker.scrollbar=slider
+    tracker.scrollThumb=thumb
+    tracker.scrollRail=rail
     tracker.empty=fontString(tracker.content,11,COLORS.muted)
     tracker.empty:SetPoint("TOPLEFT",8+NAV_MARKER_GUTTER,-12)
     visualSettings()
@@ -1601,6 +1852,9 @@ local function createSettings()
         db.showQuestItems=v
         if not v then ItemButtons:HideActions() else QuestItems:Invalidate() end
     end)
+    toggle(trackerPage,"Use original objective text","Use helpful objective descriptions",-467,
+        function() return db.helpfulObjectives end,
+        function(v) db.helpfulObjectives=v end)
 
     -- NAVIGATION: arrow size and its labels are independent groups.
     section(navigationPage,"Navigation arrow",-6)
@@ -1955,6 +2209,9 @@ local function initialize()
         if db.navigation[k]==nil then db.navigation[k]=v end
     end
     applyTheme()
+    if addon.ObjectiveGuidance and type(addon.ObjectiveGuidance.Initialize)=="function" then
+        addon.ObjectiveGuidance:Initialize(db)
+    end
     -- Use the built-in WoW font by default, including for existing installations.
     if not db.blizzardFontResetApplied then
         db.font=1
@@ -1976,17 +2233,53 @@ local function initialize()
     dirty=true
     print("|cffe8bb59XenQuest|r loaded. Use /xq for settings, /xq all to show every quest.")
 end
+local function inspectCurrentObjectives()
+    local _,entries=snapshot()
+    print("|cffe8bb59XenQuest Guidance|r: first 8 quests in your quest log (ID and raw objectives):")
+    local shown=0
+    for _,q in ipairs(entries) do
+        if shown>=8 then break end
+        shown=shown+1
+        local id=q.id and tostring(q.id) or "no ID"
+        print("  ["..id.."] "..tostring(q.title or "?").." ("..tostring(q.zone or "?")..")")
+        local objectives={}
+        if q.id and C_QuestLog and C_QuestLog.GetQuestObjectives then
+            local result=safe(C_QuestLog.GetQuestObjectives,q.id)
+            if type(result)=="table" then objectives=result end
+        end
+        if #objectives==0 and GetNumQuestLeaderBoards and GetQuestLogLeaderBoard then
+            local n=safe(GetNumQuestLeaderBoards,q.index) or 0
+            for j=1,math.min(n,12) do
+                local txt,kind=safe(GetQuestLogLeaderBoard,j,q.index)
+                if txt then objectives[#objectives+1]={text=txt,type=kind} end
+            end
+        end
+        for i,o in ipairs(objectives) do
+            if i>5 then break end
+            local raw=tostring(o.text or o.description or o.objectiveText or "")
+            print("     "..i..". "..raw:sub(1,155))
+        end
+    end
+    if shown==0 then print("  No quests in quest log yet.") end
+end
 SLASH_XENQUEST1="/xq"
 SLASH_XENQUEST2="/xenquest"
 SlashCmdList.XENQUEST=function(text)
     if not db then return end
     text=(text or ""):lower():match("^%s*(.-)%s*$")
+    if text=="guide" or text:match("^guide%s+") then
+        local guidance=addon.ObjectiveGuidance
+        if guidance and type(guidance.HandleCommand)=="function" then
+            guidance:HandleCommand(text:sub(6),inspectCurrentObjectives)
+            dirty=true
+        end
+        return
+    end
     if text=="all" then db.trackedOnly=false;dirty=true
     elseif text=="tracked" then db.trackedOnly=true;dirty=true
     elseif text=="reset" then
         db.x,db.y=DEFAULTS.x,DEFAULTS.y
-        tracker:ClearAllPoints()
-        tracker:SetPoint("TOPRIGHT",UIParent,"TOPRIGHT",db.x,db.y)
+        restoreTrackerAnchor()
         dirty=true
     elseif text=="show" then tracker:Show()
     elseif text=="hide" then tracker:Hide()
@@ -2008,7 +2301,8 @@ for _,event in ipairs(coreEvents) do
 end
 local itemEvents={"BAG_UPDATE","BAG_UPDATE_DELAYED","BAG_UPDATE_COOLDOWN","SPELL_UPDATE_COOLDOWN",
     "ITEM_LOCK_CHANGED","GET_ITEM_INFO_RECEIVED","ITEM_DATA_LOAD_RESULT","PLAYER_REGEN_DISABLED",
-    "ZONE_CHANGED_NEW_AREA","UI_SCALE_CHANGED","DISPLAY_SIZE_CHANGED","CVAR_UPDATE","QUEST_TIMER_UPDATE"}
+    "ZONE_CHANGED_NEW_AREA","UI_SCALE_CHANGED","DISPLAY_SIZE_CHANGED","CVAR_UPDATE","QUEST_TIMER_UPDATE",
+    "UPDATE_MULTI_ACTIONBAR"}
 for _,event in ipairs(itemEvents) do pcall(XQ.RegisterEvent,XQ,event) end
 XQ:SetScript("OnEvent",function(self,event,arg)
     if event=="ADDON_LOADED" then
@@ -2032,6 +2326,11 @@ XQ:SetScript("OnEvent",function(self,event,arg)
             worldReady=true
             completionBaseline=true
             finishAnimations()
+            restoreTrackerAnchor()
+        elseif event=="UI_SCALE_CHANGED" or event=="DISPLAY_SIZE_CHANGED" then
+            visualSettings()
+        elseif event=="UPDATE_MULTI_ACTIONBAR" or event=="CVAR_UPDATE" then
+            restoreTrackerAnchor()
         end
         dirty=true
     end
@@ -2043,6 +2342,7 @@ XQ:SetScript("OnUpdate",function(self,dt)
     elapsed=elapsed+dt
     if elapsed<0.35 then return end
     elapsed=0
+    refreshActionBarAvoidance()
     if dirty then
         dirty=false
         local ok,err=pcall(render)
