@@ -1,0 +1,25 @@
+# Generated ZIP files stay local; source code belongs in Git.
+/Versions/*
+!/Versions/.gitkeep
+/Backups/*
+!/Backups/.gitkeep
+/dev.local.json
+*.log
+Thumbs.db
+.DS_Store
+*.tmp
+
+# Optional local test / analysis data (not used by the live addon)
+/LocalData/
+/Tests/__pycache__/
+
+# Local screenshots and previous update packages
+/Screenies/
+/Source Updates/
+
+# Old addon archives
+/XenQuest/*.zip
+
+# QuestieDB-derived data pending redistribution clearance
+/XenQuest/Data/BulkGuidance.lua
+/XenQuest/Data/QuestContext.lua
