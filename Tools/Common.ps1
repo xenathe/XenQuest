@@ -58,7 +58,8 @@ function Get-XQPublicationWarning {
     $source = Join-Path $root 'XenQuest'
     $review = Join-Path $source 'THIRD_PARTY_DATA_REVIEW.md'
     $generatedPresent = (Test-Path -LiteralPath (Join-Path $source 'Data\BulkGuidance.lua') -PathType Leaf) -or
-                        (Test-Path -LiteralPath (Join-Path $source 'Data\QuestContext.lua') -PathType Leaf)
+                        (Test-Path -LiteralPath (Join-Path $source 'Data\QuestContext.lua') -PathType Leaf) -or
+                        (Test-Path -LiteralPath (Join-Path $source 'Data\TargetMarkerData.lua') -PathType Leaf)
     $unresolvedNotice = $false
     if (Test-Path -LiteralPath $review -PathType Leaf) {
         $unresolvedNotice = (Get-Content -LiteralPath $review -Raw) -match '(?i)NOT CLEARED FOR PUBLIC REDISTRIBUTION|NOT CLEARED'
@@ -67,7 +68,7 @@ function Get-XQPublicationWarning {
     $approved = (Test-Path -LiteralPath $approvalPath -PathType Leaf) -and
                 ((Get-Content -LiteralPath $approvalPath -Raw) -match '(?m)^CLEARED=YES\s*$')
     if ($unresolvedNotice -or ($generatedPresent -and -not $approved)) {
-        return 'The bundled QuestieDB-derived guidance data has not been documented as cleared for public redistribution. Local testing is allowed; public packaging is blocked. See Docs\RELEASE_PROCESS.md.'
+        return 'The bundled QuestieDB-derived guidance/target data has not been documented as cleared for public redistribution. Local testing is allowed; public packaging is blocked. See Docs\RELEASE_PROCESS.md.'
     }
     return $null
 }

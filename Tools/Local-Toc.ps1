@@ -8,7 +8,8 @@ function Get-XQEffectiveToc {
     $lines = @(Get-Content -LiteralPath $AddonInfo.Toc)
     $optional = @(
         'Data/BulkGuidance.lua',
-        'Data/QuestContext.lua'
+        'Data/QuestContext.lua',
+        'Data/TargetMarkerData.lua'
     )
     $extra = New-Object 'System.Collections.Generic.List[string]'
     foreach ($relative in $optional) {
@@ -21,7 +22,7 @@ function Get-XQEffectiveToc {
     # Never allow the committed/base TOC to reference files Git intentionally excludes.
     foreach ($line in $lines) {
         if ($optional -contains $line.Trim()) {
-            throw 'The source XenQuest.toc must NOT list local-only BulkGuidance.lua or QuestContext.lua. They are inserted automatically during install and packaging.'
+            throw 'The source XenQuest.toc must NOT list local-only guidance/target databases. They are inserted automatically during install and packaging.'
         }
     }
 

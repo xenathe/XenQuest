@@ -17,7 +17,7 @@ import zipfile
 
 ADDON = "XenQuest"
 TOC = "XenQuest/XenQuest.toc"
-BLOCKED_NAMES = {"WorldMap.lua", "BulkGuidance.lua", "QuestContext.lua"}
+BLOCKED_NAMES = {"WorldMap.lua", "BulkGuidance.lua", "QuestContext.lua", "TargetMarkerData.lua"}
 MANDATORY_LUA = {
     "QuestItems.lua",
     "QuestItemButtons.lua",
@@ -25,6 +25,9 @@ MANDATORY_LUA = {
     "Navigation.lua",
     "Data/QuestGuidance.lua",
     "ObjectiveGuidance.lua",
+    "NativeLearning.lua",
+    "TargetMarkers.lua",
+    "TooltipProbe.lua",
     "Core.lua",
 }
 
@@ -141,7 +144,7 @@ def main() -> int:
         if args.zip_out:
             smoke_zip(root, addon_files, args.zip_out.resolve())
             print(f"PASS: ZIP layout/integrity: {args.zip_out}")
-        print("PASS: No WorldMap module or excluded guidance data is committed")
+        print("PASS: No abandoned map module or excluded quest/target data is committed")
         return 0
     except (OSError, subprocess.CalledProcessError, ValidationError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

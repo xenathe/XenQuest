@@ -5,10 +5,6 @@ addon.QuestItems=Items
 
 -- Extend Verified as [questID]={itemID,...}, using only usable items confirmed
 -- in the target client. Record the client build and verification source here.
--- Candidate, NOT enabled: Crown of the Earth (921) / Crystal Phial (5185).
--- Installed QuestieDB_Forever.toc 1.0.6, X-Quest-921-S field 11 = 5185 and
--- X-Item-5185-S field 1 = Crystal Phial, corroborate the IDs. The local client's
--- questcache has no 921 record, so this is not yet direct client verification.
 -- Native associations/special-item APIs work without any database entries.
 
 local inventory,associations={},{}

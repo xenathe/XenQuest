@@ -1,57 +1,22 @@
-XenQuest v0.2.12-beta - WoW Forever quest-tracker replacement
-============================================================
-LOCAL RELEASE CANDIDATE - do not publish until data licensing is cleared.
-Install the entire XenQuest folder under Interface/AddOns, then restart WoW.
+XenQuest v0.2.13-beta — WoW Forever native-only edition
+======================================================
 
-NEW: Scroll large quest lists; left-click opens the quest log and right-click expands/collapses.
-NEW: Intelligent objective guidance and hoverable quest reference summaries.
+Install XenQuest under Interface/AddOns, then /reload.
+Type /xq to open settings.
 
-/xq or /xenquest  Open settings
-/xq all           Show all quests in the quest log
-/xq tracked       Show only watched quests (default)
-/xq reset         Reset tracker position
-/xq show          Show XenQuest
-/xq hide          Hide XenQuest
+NEW: Quest target swords and native objective learning.
+Enable live learning with /xq learn on; inspect with /xq learn status.
+Native learning is optional and OFF by default on first install.
+Quest discoveries are stored in your XenQuestDB SavedVariables and are not
+automatically shared with other players.
 
-Features
-- New Themes tab: Gold/Ice/Custom presets, live tracker and navigation colour pickers.
-- Font family, arrow artwork style and theme reset now live under Themes.
-- Fixed-size settings window with organised pages and a clean accent-underline tab.
-- Quests automatically grouped by zone; current zone open by default, others collapsed.
-- Click any zone heading to expand or collapse it; manual choices reset after zone changes.
-- Incomplete quests first; Blizzard quest-log order is retained within each group.
-- New completions shimmer green, collapse and glide below incomplete quests.
-- Automatic collapse preserves saved choices; right-click still expands details.
-- Optional quest-item icons with tooltips, counts, cooldowns and secure click-to-use.
-  Enabled by default; quick-use is unavailable during combat. See README.md for
-  detection coverage, verified-mapping requirements and the in-game test checklist.
-- Quest levels, names, status symbols (!) and (?) in circular frames.
-- Live per-objective counts and gold progress bars; complete bars turn green.
-- Left-click a quest title to open that quest in Blizzard's quest log.
-- Timed quests show a live countdown beside the title, including timed turn-ins.
-- Right-click a quest row to expand/collapse objectives; markers control tracking.
-- Quest-title actions are now uniform across completed and active quests.
-- Drag the XenQuest tracker; adjustable width, height, UI scale and font.
-- Fully transparent background at 0% while bars and text remain visible.
-- Settings: opacity, scale, width, height, font family, font size, accent theme,
-  hide/show Blizzard tracker, watched-only display, lock position.
+NEW: Corpse navigation, red high-level quest warnings, (E) elite tooltips.
+FIX: Protected/secret NPC identity values are skipped safely.
 
-Compatibility and limitations
-- This is a beta build and needs testing in WoW Forever (Interface 16001).
-- XenQuest never auto-accepts, abandons or turns in quests.
-- On clients exposing no watch-list API, watched-only mode falls back to all
-  quest-log entries rather than displaying a blank tracker.
-- Some custom quest objectives may not expose numerical progress; those remain
-  plain text without a made-up bar.
-- Blizzard tracker roots are hidden, including their child mouse regions, and
-  restored when hiding is disabled. Native quest/map tracking remains enabled.
-  Protected changes and restoration wait until combat ends; forbidden roots
-  are skipped. See README.md for compatibility details and in-game checks.
-- Title navigation pauses during movement and is unavailable during combat or
-  Forever controller mode. Missing/ambiguous quests are never guessed.
-- The tracker uses Blizzard's native font files; no font files are bundled.
-- You can restore the original tracker by unchecking Hide Blizzard tracker.
-- Do not remove your SavedVariables file when updating.
+This ZIP intentionally does NOT contain QuestieDB-derived guidance / NPC
+mapping datasets. Only independently observed manual quest corrections remain.
+No externally sourced data should be copied into the installed addon folder.
+Custom fonts: provide your own Media/custom.ttf if desired.
 
-Official support: https://discord.gg/96UKh6AeAN
-Open /xq > Need help? to copy the Discord invite.
+See README.md, DATA_PROVENANCE.md and RELEASE_NOTES.md.
+Help: https://discord.gg/96UKh6AeAN

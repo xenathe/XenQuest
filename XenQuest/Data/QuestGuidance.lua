@@ -1,6 +1,6 @@
 -- XenQuest Objective Guidance data (Phase 1, Northshire live test).
 -- Quest-specific instructions require confirmed quest IDs/objective labels.
--- Legacy Zenn's Bidding hints remain separated below, pending verification.
+-- Only player-verified corrections are retained in the distributable build.
 -- No changes are needed to Core.lua when adding verified guidance records.
 local ADDON_NAME, addon = ...
 addon.QuestGuidanceData = {
@@ -32,7 +32,7 @@ addon.QuestGuidanceData = {
             },
         },
         -- Confirmed on Forever: a ground pickup near the Defias camp;
-        -- NOT the "Stolen Books" object suggested by raw QuestieDB.
+        -- This is a directly observed in-game pickup location.
         [1598]={
             title="The Stolen Tome",
             objectives={
@@ -44,17 +44,6 @@ addon.QuestGuidanceData = {
             title="Rascally Rodents",
             objectives={
                 ["stolen book"]="Kill Kobold Workers to collect Stolen Books",
-            },
-        },
-    },
-    questsByTitle={
-        ["zenn's bidding"]={
-            -- These three phrases were moved verbatim from XenQuest v0.2.11.
-            -- They are not new, independently verified data.
-            objectives={
-                ["nightsaber fang"]="Kill Nightsabers to collect Nightsaber Fangs",
-                ["strigid owl feather"]="Kill Strigid Owls to collect Strigid Owl Feathers",
-                ["webwood spider silk"]="Kill Webwood Spiders to collect Webwood Spider Silk",
             },
         },
     },

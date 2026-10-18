@@ -23,6 +23,17 @@
 4. This ZIP has exactly one top-level `XenQuest/` folder ready for extracting into `Interface\AddOns`.
 5. If a ZIP of the same version already exists, the script refuses to overwrite it. Intentionally rebuild it with `powershell.exe -ExecutionPolicy Bypass -File .\Tools\Build-Release.ps1 -Force` if needed.
 
+## Native-only public package (v0.2.13-beta)
+
+The special `-Public -NativeOnly` command uses an audited allowlist to exclude the local QuestieDB-derived datasets, `Media/custom.ttf`, and the obsolete local-only notice. It does NOT assert that the derived files are licensed or suitable for distribution.
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\Tools\Build-Release.ps1 -Public -NativeOnly
+powershell.exe -ExecutionPolicy Bypass -File .\Tools\Test-NativePublic-Zip.ps1
+```
+
+**This installs the exact ZIP for testing**; the normal development installer would re-add local generated datasets. See `Docs/NATIVE_ONLY_RELEASE.md` before GitHub upload. The source `XenQuest/` folder may contain local-only datasets, which the native-only builder excludes. Ensure the Git HEAD and GitHub default branch do NOT list them, and remember old history can still retain old uploads.
+
 ## Publishing to GitHub / CurseForge
 
 - **Current block:** The existing source archive includes QuestieDB-derived `Data/BulkGuidance.lua` and `Data/QuestContext.lua`, for which redistribution terms were previously identified as unresolved. Treat all generated ZIPs as local-only until you have documented permission or a compliant licensing approach. This is not a substitute for legal review.

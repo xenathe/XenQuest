@@ -23,3 +23,6 @@ Thumbs.db
 # QuestieDB-derived data pending redistribution clearance
 /XenQuest/Data/BulkGuidance.lua
 /XenQuest/Data/QuestContext.lua
+/XenQuest/Data/TargetMarkerData.lua
+
+__pycache__/

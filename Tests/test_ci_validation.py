@@ -38,6 +38,10 @@ class ValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "Blocked file committed"):
             validate(self.root, self.tracked + ["XenQuest/Data/BulkGuidance.lua"])
 
+    def test_blocks_committed_target_database(self):
+        with self.assertRaisesRegex(ValidationError, "Blocked file committed"):
+            validate(self.root, self.tracked + ["XenQuest/Data/TargetMarkerData.lua"])
+
     def test_blocks_world_map(self):
         with self.assertRaisesRegex(ValidationError, "Blocked file committed"):
             validate(self.root, self.tracked + ["XenQuest/WorldMap.lua"])

@@ -12,6 +12,8 @@ local turnShimmer,lastRelativeAngle=0,nil
 local forcedQuestID,selectedQuestID,lastActiveQuestID
 local lastNativeQuestID=0
 local navigationManuallyStopped=false
+-- Corpse routing only overrides the display. The selected quest is not changed.
+local deathSnapshot,deathWasActive=nil,false
 local fallbackPending,fallbackStarted,fallbackExcluded
 local fallbackAttemptsAt=0
 local lastValidityAt,lastValidityID,lastValidityValue=0,nil,nil
@@ -91,6 +93,86 @@ local function waypointVector(questID)
     if type(px)~="number" or type(py)~="number" or type(tx)~="number" or type(ty)~="number" then return nil end
     return tx-px,ty-py
 end
+-- Corpse route uses only positions reported by the client. Unlike quest
+-- selection it never writes to Blizzard super-tracking or our saved settings.
+local function playerIsDead()
+    return call(UnitIsDeadOrGhost,"player")==true
+        or call(UnitIsGhost,"player")==true or call(UnitIsDead,"player")==true
+end
+local function validCorpsePoint(mapID,x,y)
+    return validPoint(mapID,x,y) and not (x==0 and y==0)
+end
+local function positionXY(pos)
+    if not pos then return nil,nil end
+    local x,y=call(pos.GetXY,pos)
+    if type(x)=="number" and type(y)=="number" then return x,y end
+    if type(pos)=="table" then return pos.x,pos.y end
+end
+local function mapChain(mapID)
+    local ids,seen={},{}
+    for _=1,6 do
+        if type(mapID)~="number" or mapID<=0 or seen[mapID] then break end
+        seen[mapID]=true
+        ids[#ids+1]=mapID
+        local info=call(C_Map and C_Map.GetMapInfo,mapID)
+        mapID=type(info)=="table" and info.parentMapID or nil
+    end
+    return ids
+end
+local function snapshotDeathPosition()
+    if not C_Map then return end
+    local mapID=call(C_Map.GetBestMapForUnit,"player")
+    local pos=mapID and call(C_Map.GetPlayerMapPosition,mapID,"player")
+    local x,y=positionXY(pos)
+    if validCorpsePoint(mapID,x,y) then
+        deathSnapshot={mapID=mapID,x=x,y=y}
+    end
+end
+local function corpseVector()
+    if not C_Map or not C_Map.GetWorldPosFromMapPos or not CreateVector2D then return nil,nil end
+    local playerMap=call(C_Map.GetBestMapForUnit,"player")
+    if type(playerMap)~="number" then return nil,nil end
+    local mapIDs=mapChain(playerMap)
+    local playerInstance,playerWorld
+    for _,id in ipairs(mapIDs) do
+        local p=call(C_Map.GetPlayerMapPosition,id,"player")
+        local x,y=positionXY(p)
+        if validPoint(id,x,y) then
+            local instance,world=call(C_Map.GetWorldPosFromMapPos,id,CreateVector2D(x,y))
+            if type(instance)=="number" and world then
+                playerInstance,playerWorld=instance,world
+                break
+            end
+        end
+    end
+    if not playerWorld then return nil,nil end
+    local px,py=positionXY(playerWorld)
+    if type(px)~="number" or type(py)~="number" then return nil,nil end
+    local getCorpse=C_DeathInfo and C_DeathInfo.GetCorpseMapPosition
+    local function vectorFor(mapID,x,y)
+        if not validCorpsePoint(mapID,x,y) then return nil,nil end
+        local targetInstance,targetWorld=call(C_Map.GetWorldPosFromMapPos,mapID,CreateVector2D(x,y))
+        if targetWorld and playerInstance==targetInstance then
+            local tx,ty=positionXY(targetWorld)
+            if type(tx)=="number" and type(ty)=="number" then return tx-px,ty-py end
+        end
+    end
+    -- Forever/Classic clients usually offer this API after releasing spirit.
+    if type(getCorpse)=="function" then
+        for _,id in ipairs(mapIDs) do
+            local pos=call(getCorpse,id)
+            local x,y=positionXY(pos)
+            local dx,dy=vectorFor(id,x,y)
+            if dx then return dx,dy end
+        end
+    end
+    -- A same-session snapshot taken at PLAYER_DEAD is a cautious fallback.
+    -- Never record a new location while running as a ghost at a graveyard.
+    if deathSnapshot then
+        return vectorFor(deathSnapshot.mapID,deathSnapshot.x,deathSnapshot.y)
+    end
+end
+
 -- Quest-log enumeration is deliberately independent of XenQuest's visible
 -- tracker: a player may have hidden or unwatched quests that remain navigable.
 local function activeQuestList()
@@ -308,8 +390,49 @@ local function updateArrowHeading()
         arrowBlendGlow:SetAlpha(alpha*arrowBlend:GetAlpha())
     end
 end
+local function refreshCorpseRoute()
+    title:SetText("Your corpse")
+    frame:Show()
+    -- The corpse run starts after releasing spirit. Do not show an
+    -- unhelpful 0-yard bearing while still lying dead on the ground.
+    if call(UnitIsDead,"player")==true and call(UnitIsGhost,"player")~=true then
+        currentBearing=nil
+        arrow:Hide();arrowBlend:Hide();arrowGlow:Hide();arrowBlendGlow:Hide()
+        distance:SetText("Release spirit to locate corpse")
+        return
+    end
+    local dx,dy=corpseVector()
+    if type(dx)~="number" or type(dy)~="number" then
+        currentBearing=nil
+        lastRelativeAngle=nil
+        arrow:Hide();arrowBlend:Hide();arrowGlow:Hide();arrowBlendGlow:Hide()
+        if call(UnitIsGhost,"player")==true then
+            distance:SetText("Corpse position unavailable")
+        else
+            distance:SetText("Release spirit to locate corpse")
+        end
+        return
+    end
+    arrow:Show();arrowBlend:Show();arrowGlow:Show();arrowBlendGlow:Show()
+    local yards=math.sqrt(dx*dx+dy*dy)
+    distance:SetText(string.format("%.0f yd to corpse",yards))
+    currentBearing=atan2(dy,dx)
+    updateArrowHeading()
+end
+
 function Navigation:Refresh()
     if not frame or not db then return end
+    if playerIsDead() then
+        deathWasActive=true
+        refreshCorpseRoute()
+        return
+    end
+    if deathWasActive then
+        deathWasActive=false
+        deathSnapshot=nil
+        -- Reset heading smoothing after returning to quest navigation.
+        lastRelativeAngle=nil
+    end
     local native=chosenQuest()
     if type(native)~="number" or native<0 then native=0 end
     -- A deliberate click on ! always wins. Once Blizzard catches up, use its
@@ -450,6 +573,44 @@ function Navigation:Initialize(database)
         end
     end)
     frame:SetScript("OnLeave",function() if GameTooltip then GameTooltip:Hide() end end)
+    -- Configure the working quest arrow *before* installing optional death
+    -- notifications. A missing event on a modified Forever client must never
+    -- prevent normal navigation from initialising.
     self:ApplySettings()
     self:Refresh()
+
+    -- This independent, always-visible frame can wake corpse routing when the
+    -- quest navigation widget itself is hidden (hidden frames do not OnUpdate).
+    local deathEvents=CreateFrame("Frame")
+    deathEvents:SetScript("OnEvent",function(_,event)
+        if event=="PLAYER_DEAD" then
+            deathSnapshot=nil
+            snapshotDeathPosition()
+        elseif (event=="PLAYER_ALIVE" or event=="PLAYER_UNGHOST")
+            and not playerIsDead() then
+            deathSnapshot=nil
+        elseif event=="PLAYER_ENTERING_WORLD" and not playerIsDead() then
+            deathSnapshot=nil
+        end
+        Navigation:Refresh()
+    end)
+    -- Not all Forever builds accept every event. Register safely; never let
+    -- an optional notification disable the entire navigation widget.
+    for _,event in ipairs({"PLAYER_DEAD","PLAYER_ALIVE","PLAYER_UNGHOST",
+        "PLAYER_ENTERING_WORLD","CORPSE_POSITION_UPDATE","ZONE_CHANGED_NEW_AREA"}) do
+        pcall(deathEvents.RegisterEvent,deathEvents,event)
+    end
+
+    -- Corpse data can appear after the release event, and some clients omit
+    -- CORPSE_POSITION_UPDATE. Poll ONLY during death/recovery, independently
+    -- of the main navigation widget's visible state.
+    local deathPollElapsed=0
+    deathEvents:SetScript("OnUpdate",function(_,dt)
+        deathPollElapsed=deathPollElapsed+(type(dt)=="number" and dt or 0)
+        if deathPollElapsed<0.4 then return end
+        deathPollElapsed=0
+        if playerIsDead() or deathWasActive then
+            Navigation:Refresh()
+        end
+    end)
 end

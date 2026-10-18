@@ -1,60 +1,65 @@
-# XenQuest v0.2.12-beta — Intelligent Quest Guidance & Quality of Life
+# XenQuest v0.2.13-beta — Quest Target Swords & Native Learning
 
-XenQuest takes a major step beyond basic quest tracking. This update introduces a local, data-driven guidance engine, a scrollable tracker for larger quest logs, streamlined quest interactions and a collection of important positioning fixes.
+XenQuest now helps you identify enemies relevant to your active quests and can learn useful quest-to-enemy relationships directly from World of Warcraft: Forever's own tooltip data. This update also polishes quest difficulty display, highlights elite quests, and improves navigation and compatibility.
 
-## New — Intelligent Objective Guidance
+## New — Quest Target Swords
 
-- Added helpful, context-aware objective descriptions for supported quests, including creature kills, item collection and interacting with quest objects.
-- Preserved live quest counters, progress bars and completion effects when displaying longer descriptions.
-- Added a large offline guidance catalogue generated from a WoW Forever quest-data snapshot: **5,179 quests analysed; 1,577 quests with enhanced-guidance candidates**.
-- Included source-objective reference summaries for **4,535 quests**, visible by hovering a matching quest title.
-- Identifies multiple possible enemy sources for supported collection objectives, including *The Everstill Bridge*'s Iron Pikes and Iron Rivets.
-- Retains previously confirmed, Forever-specific corrections, including *The Stolen Tome* and *Rascally Rodents*.
-- Checks both quest ID and quest title before applying bulk guidance, preventing incorrect instructions when clients use different quest records.
-- Falls back to the original in-game objective text whenever no sufficiently supported enhanced description is available.
-- Added optional guidance controls and an opt-in objective recorder (`/xq guide status`, `/xq guide record on`, `/xq guide record off`, `/xq guide inspect`).
+- Added gold sword indicators above supported enemy nameplates when the enemy is relevant to an unfinished quest objective.
+- Displays a sword above native-learned NPCs relevant to active unfinished objectives. A fresh installation learns relationships as players encounter enemies.
+- Added controls for enabling markers, changing icon size, and choosing between marking all eligible enemies and closest-only where distance can be measured reliably.
+- Markers stop appearing for finished objectives and do not target, attack, or interact with enemies automatically.
 
-**Coverage note:** 1,577 is the number of quests with *candidate* enhanced descriptions, not 1,577 individually player-verified quests. Not every quest can yet receive a more detailed instruction. Reference tooltips reflect imported source data and may differ from modified Forever quests.
+## New — Native Quest Learning (Experimental)
 
-## New — Scrollable Quest Tracker
+- Added an optional learning engine that reads supported **native WoW Forever quest tooltip information** and matches it against the player's active, unfinished objectives.
+- Learned NPC/objective relationships are saved locally and can be reused for improved quest instructions and sword markers.
+- Confirmed kill-objective improvements can update live, such as `Riverpaw Miner Slain` becoming `Kill Riverpaw Miner`.
+- Uses strict quest/objective matching and does not invent item drop sources when the tooltip does not establish them.
+- Includes `/xq learn on`, `/xq learn off`, `/xq learn target`, and `/xq learn status` for testing and control.
+- Native-only data is the only source of NPC mappings shipped in this release; no QuestieDB-derived data files are included.
 
-- Scroll through large quest lists with the mouse wheel, including when hovering quest titles and other rows.
-- Added a subtle scrollbar that appears only when content exceeds the available height.
-- Corrected scrollbar direction so the thumb moves down when you scroll down.
-- Refined the scrollbar with a proportional thumb and dragging support.
-- Keeps the tracker bounded within the available screen area without overwriting saved placement.
+**Note:** Run `/xq learn on` to enable learning. This is an experimental local-learning feature, not a global shared database. Discovered knowledge is stored in the player's own SavedVariables and is not automatically transmitted to other XenQuest installations.
 
-## Improved — Quest Mouse Controls
+## New — Clearer Quest Difficulty & Elite Identification
 
-- **Left-click any quest:** open that specific quest in Blizzard's quest log, including completed quests.
-- **Right-click a quest:** expand or collapse its objectives.
-- **Left-click the quest marker:** toggle navigation to the quest.
-- Improved right-button camera pass-through on non-interactive tracker areas where supported by the game client.
+- Quest levels now keep the selected XenQuest theme colour by default.
+- Only the bracketed level turns red when a quest is five or more levels above the player's current level.
+- Supported elite/group quests show a compact `(E)` after their title.
+- Hovering an elite quest displays: *This is an Elite quest, form a party to complete it*.
 
-## Fixes & Polishing
+## Improved — Navigation
 
-- Fixed longer objective counters such as `10/10` wrapping or overlapping progress bars.
-- Stabilised the tracker anchor when minimising, expanding or reloading the UI; no manual unlock/relock required.
-- Added avoidance of visible right-side Blizzard action bars, including dynamic changes, without changing the saved position.
-- Preserved automatic zone grouping, completion effects, timed quests, quest-item controls, themes and the 64-frame Gold/Ice isometric navigation artwork.
+- Added corpse-run guidance when the game provides a valid corpse location.
+- Normal quest navigation resumes after resurrection.
+- Existing movable isometric navigation and tracker interactions remain intact.
+
+## Fixes & Compatibility
+
+- Hardened quest target markers against restricted ("secret") NPC GUID/name/ID values to reduce errors in instances and combat.
+- Improved the native tooltip diagnostic so a valid target without an open tooltip is reported accurately.
+- Preserved zone grouping, completion effects, objective bars, quest-item shortcuts, themes, and scrollable tracker behaviour.
 
 ## Known Limitations
 
-- Enhanced objective descriptions depend on the available Forever source data; some objectives will intentionally retain Blizzard's wording.
-- Quest source associations are generated suggestions and may require further correction for modified/custom content.
-- Right-click camera pass-through and action-bar positioning depend on what the active WoW client exposes; edge cases may remain.
-- The **experimental Garrick-only nameplate skull marker is not included** in this update, pending further in-game validation.
-- No experimental XenQuest World Map overlay is included.
+- Native learning currently focuses on supported NPC/quest relationships. Learning from quest objects such as ground crates is not yet implemented.
+- Native learning requires readable quest metadata from the WoW Forever client. Some in-instance or combat data may be restricted.
+- Certain collection objectives cannot safely identify their item source from a tooltip alone; XenQuest keeps the original wording when evidence is insufficient.
+- Closest-only markers depend on available NPC distance information.
+- Player discoveries are local. Community-wide automatic discovery sharing and a database manager are future ideas, not part of this release.
 
 ## Release Information
 
-- **Version:** `0.2.12-beta`
-- **Release type:** Beta
-- **Primary client:** World of Warcraft: Forever (`Interface 16001`)
-- **Previous public version:** `0.2.11-beta`
+- **Proposed version:** `v0.2.13-beta`
+- **Client:** World of Warcraft: Forever (`Interface 16001`)
+- **Status:** Native-only release candidate; test the exact ZIP on WoW Forever before publication.
+- **Baseline:** v0.2.12-beta development source.
+
+**Redistribution notice for the release maintainer:** Do not upload a package containing the QuestieDB-derived `Data/BulkGuidance.lua`, `Data/QuestContext.lua` or `Data/TargetMarkerData.lua` while the necessary redistribution rights remain unresolved. Prepare and test a native-only public package, or wait for rights clearance. Remove this note from user-facing release text only after the actual package contents and rights have been verified.
 
 ## Support
 
-Report problems or suggest features on the official [XenQuest Discord](https://discord.gg/96UKh6AeAN). Source repository: [xenathe/XenQuest](https://github.com/xenathe/XenQuest).
+Report bugs or quest-specific inaccuracies in the [XenQuest GitHub repository](https://github.com/xenathe/XenQuest), or join the [XenQuest Discord](https://discord.gg/96UKh6AeAN).
 
-**Thanks for supporting XenQuest — happy questing!**
+## Distribution data policy
+
+This native-only edition excludes `Data/BulkGuidance.lua`, `Data/QuestContext.lua` and `Data/TargetMarkerData.lua`. Initial guidance coverage is lower than previous local development builds. Locally verified hand-authored quest corrections remain in `Data/QuestGuidance.lua`. The native learner stores discoveries in `XenQuestDB` SavedVariables, not a community server. No QuestieDB licence permission is presumed. See `DATA_PROVENANCE.md`.

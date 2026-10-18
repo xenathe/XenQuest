@@ -30,6 +30,11 @@ function Guidance:Initialize(saved)
 end
 function Guidance:Describe(quest,original)
     if not db or db.helpfulObjectives==false or type(original)~="string" then return original end
+    if addon.NativeLearning and type(addon.NativeLearning.Describe)=="function" then
+        local native=addon.NativeLearning:Describe(quest,original)
+        if type(native)=="string" and native~="" then return native end
+    end
+    -- This build uses native learning and independently verified manual corrections.
     local label=keyFor(original)
     if label=="" then return original end
     local data=addon.QuestGuidanceData

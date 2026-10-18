@@ -2,12 +2,15 @@
 ## Title: XenQuest
 ## Notes: Customisable quest tracker with smooth isometric navigation for WoW Forever.
 ## Author: XenQuest
-## Version: 0.2.12-beta
+## Version: 0.2.13-beta
 ## SavedVariables: XenQuestDB
 QuestItems.lua
 QuestItemButtons.lua
 BlizzardUI.lua
 Navigation.lua
 Data/QuestGuidance.lua
+NativeLearning.lua
 ObjectiveGuidance.lua
+TargetMarkers.lua
+TooltipProbe.lua
 Core.lua

@@ -1,4 +1,4 @@
--- XenQuest 0.2.11-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
+-- XenQuest 0.2.13-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
 -- Never changes the quest log or uses protected quest actions automatically.
 local ADDON_NAME,addon = ...
 local QuestItems,ItemButtons=addon.QuestItems,addon.QuestItemButtons
@@ -42,6 +42,8 @@ local DEFAULTS = {
     x=-36,y=-175,scale=1,width=325,height=430,opacity=0,font=1,fontSize=12,
     trackedOnly=true,hideBlizzard=true,showHeader=true,locked=false,compact=false,
     theme="gold", primaryQuest=0, collapsed={}, minimized=false,showQuestItems=true,
+    -- Quest swords are optional; defaults match the existing standalone marker module.
+    questTargetMarkers=true,questTargetMarkerMode="nearest",questTargetMarkerSize=32,
 }
 local NAV_DEFAULTS = {
     x=0,y=-110,scale=1,arrowSize=88,titleSize=13,distanceSize=11,
@@ -297,17 +299,81 @@ local function objectivePresentation(o,description,count,total,done)
     return count,total,done,(count~=nil and total~=nil and total>0)
 end
 
+-- Keep the configured XenQuest theme on every quest level unless the
+-- quest is at least five levels higher than the player. Only the bracketed
+-- level is red; the title, timers and completion animations stay themed.
+local QUEST_TOO_HIGH_COLOR={0.98,0.29,0.29}
+local function questLevelLabel(level)
+    local label="["..tostring(level or "?").."]"
+    local questLevel=tonumber(level)
+    local playerLevel=tonumber(safe(UnitLevel,"player"))
+    if not questLevel or questLevel<=0 or not playerLevel or playerLevel<=0
+        or questLevel-playerLevel<5 then return label end
+    -- |r resumes the FontString's theme/completion colour after the level.
+    local red=QUEST_TOO_HIGH_COLOR
+    return string.format("|cff%02x%02x%02x%s|r",
+        math.floor(red[1]*255+0.5),math.floor(red[2]*255+0.5),
+        math.floor(red[3]*255+0.5),label)
+end
+
+-- Forever supports C_QuestLog.GetQuestTagInfo; Era may expose the older
+-- GetQuestTagInfo or a string quest tag in GetQuestLogTitle. A tag ID of 1
+-- represents a group quest in modern clients (the classic elite/group bucket).
+-- Do not infer elite status merely from a numeric suggestedGroup return;
+-- it is not a quest tag and could mark a non-elite group activity.
+local function isEliteTag(tag,explicitElite)
+    if explicitElite==true then return true end
+    if type(tag)=="table" then
+        if tag.isElite==true then return true end
+        local tagID=tonumber(tag.tagID)
+        if tagID==1 or tagID==111 or tagID==112 then return true end
+        tag=tag.tagName
+    end
+    if type(tag)=="string" then
+        tag=tag:lower():match("^%s*(.-)%s*$")
+        return tag=="elite" or tag=="group"
+    end
+    return false
+end
+local function isEliteQuest(questID,info,legacyTag,title)
+    if type(title)=="string" and title:lower():match("%s*%(elite%)%s*$") then return true end
+    if info and (isEliteTag(info.questTagInfo,info.isElite)
+        or isEliteTag(info.questTag) or isEliteTag({tagID=info.tagID})) then return true end
+    if isEliteTag(legacyTag) then return true end
+    if type(questID)~="number" or questID<=0 then return false end
+    if C_QuestLog and type(C_QuestLog.GetQuestTagInfo)=="function" then
+        local tag=safe(C_QuestLog.GetQuestTagInfo,questID)
+        if isEliteTag(tag) then return true end
+    end
+    if type(GetQuestTagInfo)=="function" then
+        local tagID,tagName,_,_,isElite=safe(GetQuestTagInfo,questID)
+        if isEliteTag({tagID=tagID,tagName=tagName,isElite=isElite}) then return true end
+    end
+    return false
+end
+local function questDisplayTitle(q)
+    local title=tostring(q.title or "")
+    if not q.isElite then return title end
+    -- Avoid doubling an explicit suffix supplied by a custom quest client.
+    title=title:gsub("%s*%([Ee][Ll][Ii][Tt][Ee]%)%s*$","")
+    title=title:gsub("%s*%([Ee]%)%s*$","")
+    return title.." (E)"
+end
+
 local function questTitleFromLog(index)
     local name,level,tag,header,collapsed,complete,frequency,questID
     if C_QuestLog and C_QuestLog.GetInfo then
         local info=safe(C_QuestLog.GetInfo,index)
         if type(info)=="table" then
-            return info.title or info.name,info.level,info.isHeader,info.questID,info.isComplete
+            name=info.title or info.name
+            return name,info.level,info.isHeader,info.questID,info.isComplete,
+                not info.isHeader and isEliteQuest(info.questID,info,nil,name) or false
         end
     end
     if GetQuestLogTitle then
         name,level,tag,header,collapsed,complete,frequency,questID=safe(GetQuestLogTitle,index)
-        return name,level,header,questID,complete
+        return name,level,header,questID,complete,
+            not header and isEliteQuest(questID,nil,tag,name) or false
     end
 end
 local function timerSeconds(value)
@@ -375,14 +441,15 @@ local function snapshot()
     end
     local logZone = "Other Quests"
     for i=1,total do
-        local name,level,header,id,complete=questTitleFromLog(i)
+        local name,level,header,id,complete,isElite=questTitleFromLog(i)
         if header and type(name)=="string" and name~="" then
             -- Quest-log headers are authoritative for quest zone membership.
             -- This does not expand/collapse Blizzard's own quest-log headers.
             logZone=name
         elseif name and not header then
             if type(id)~="number" or id<=0 then id=nil end
-            local e={index=i,id=id,title=name,zone=logZone,level=tonumber(level) or 0,complete=complete==true or complete==1}
+            local e={index=i,id=id,title=name,zone=logZone,level=tonumber(level) or 0,
+                isElite=isElite==true,complete=complete==true or complete==1}
             e.key=id and ("quest:"..id) or ("index:"..i)
             if id and C_QuestLog and C_QuestLog.IsComplete then
                 local done=safe(C_QuestLog.IsComplete,id)
@@ -583,15 +650,26 @@ local function createRow(parent)
     -- Guard by both quest ID and title to avoid Forever custom-ID collisions.
     row.titleButton:SetScript("OnEnter",function(self)
         local q=row.quest
-        if not GameTooltip or not q or not q.id or (db and db.helpfulObjectives==false) then return end
-        local entries=addon.QuestContext
-        local record=entries and entries[tonumber(q.id)]
-        if not record or type(record.title)~="string" or type(record.text)~="string"
-            or record.title:lower()~=tostring(q.title or ""):lower() then return end
+        if not GameTooltip or not q then return end
+        local record
+        if q.id and (not db or db.helpfulObjectives~=false) then
+            local entries=addon.QuestContext
+            local candidate=entries and entries[tonumber(q.id)]
+            if candidate and type(candidate.title)=="string" and type(candidate.text)=="string"
+                and candidate.title:lower()==tostring(q.title or ""):lower() then
+                record=candidate
+            end
+        end
+        if not q.isElite and not record then return end
         GameTooltip:SetOwner(self,"ANCHOR_LEFT")
         GameTooltip:SetText(q.title,1,0.83,0.44)
-        GameTooltip:AddLine("Quest objective reference",0.75,0.85,0.91)
-        GameTooltip:AddLine(record.text,0.96,0.96,0.90,true)
+        if q.isElite then
+            GameTooltip:AddLine("This is an Elite quest, form a party to complete it",1,0.80,0.45,true)
+        end
+        if record then
+            GameTooltip:AddLine("Quest objective reference",0.75,0.85,0.91)
+            GameTooltip:AddLine(record.text,0.96,0.96,0.90,true)
+        end
         GameTooltip:Show()
     end)
     row.titleButton:SetScript("OnLeave",function(self)
@@ -875,7 +953,7 @@ local function updateRow(row,q,width)
     applyFont(row.head,13,"OUTLINE")
     row.head:SetShadowColor(0,0,0,0.65)
     row.head:SetShadowOffset(1,-1)
-    row.head:SetText("["..tostring(q.level or "?").."] "..q.title..timerText(q.timeLeft))
+    row.head:SetText(questLevelLabel(q.level).." "..questDisplayTitle(q)..timerText(q.timeLeft))
     row.titleButton:SetSize(row.head:GetWidth(),measuredHeight(row.head,17))
     -- Apply the same selected font and outline as quest titles, only larger.
     -- The old marker had a malformed font path, silently leaving its tiny font in place.
@@ -1864,13 +1942,69 @@ local function createSettings()
     slider(navigationPage,"Quest title text",11,20,1,-140,function() return db.navigation.titleSize or NAV_DEFAULTS.titleSize end,function(v) db.navigation.titleSize=v; refreshNavigationSettings() end)
     slider(navigationPage,"Distance text",10,18,1,-183,function() return db.navigation.distanceSize or NAV_DEFAULTS.distanceSize end,function(v) db.navigation.distanceSize=v; refreshNavigationSettings() end)
 
-    section(navigationPage,"Using navigation",-256)
+    section(navigationPage,"Using navigation",-226)
     local navHint=fontString(navigationPage,11,COLORS.muted)
-    navHint:SetPoint("TOPLEFT",navigationPage,"TOPLEFT",17,-289)
+    navHint:SetPoint("TOPLEFT",navigationPage,"TOPLEFT",17,-258)
     navHint:SetWidth(523)
-    navHint:SetHeight(64)
-    navHint:SetText("Click the ! icon beside a quest to navigate. Drag the isometric arrow in-game to position it wherever you prefer.\n\nThe arrow uses the Gold or Icy Blue artwork to match your chosen theme. Quests without waypoint data may not support navigation.")
-    applyFont(navHint,11)
+    navHint:SetHeight(46)
+    navHint:SetText("Click the ! beside a quest to navigate; drag the arrow to reposition it.\nWhen you die, the arrow temporarily guides you to your corpse.")
+    applyUIFont(navHint,11)
+
+    -- Quest target swords use their own nameplate overlay. Settings here
+    -- never affect the navigation arrow or saved quest selection.
+    section(navigationPage,"Quest target markers",-311)
+    local function updateTargetMarkers()
+        if addon.TargetMarkers and type(addon.TargetMarkers.Refresh)=="function" then
+            local ok,err=pcall(addon.TargetMarkers.Refresh,addon.TargetMarkers)
+            if not ok then
+                print("|cffff6666XenQuest target marker error:|r "..tostring(err))
+            end
+        end
+    end
+    local markerToggle=makeButton(navigationPage,"",function(self)
+        db.questTargetMarkers=not (db.questTargetMarkers~=false)
+        self.text:SetText(db.questTargetMarkers and "Quest swords: Enabled" or "Quest swords: Disabled")
+        applyUIFont(self.text,11)
+        updateTargetMarkers()
+    end)
+    markerToggle:SetPoint("TOPLEFT",navigationPage,"TOPLEFT",17,-341)
+    markerToggle:SetPoint("TOPRIGHT",navigationPage,"TOPRIGHT",-17,-341)
+    markerToggle:SetHeight(26)
+    local function refreshMarkerToggle()
+        markerToggle.text:SetText(db.questTargetMarkers~=false and "Quest swords: Enabled" or "Quest swords: Disabled")
+        applyUIFont(markerToggle.text,11)
+    end
+    refreshMarkerToggle()
+
+    slider(navigationPage,"Sword icon size",18,52,2,-379,
+        function() return db.questTargetMarkerSize or 32 end,
+        function(v)
+            db.questTargetMarkerSize=v
+            if addon.TargetMarkers and type(addon.TargetMarkers.ApplyMarkerSize)=="function" then
+                pcall(addon.TargetMarkers.ApplyMarkerSize,addon.TargetMarkers)
+            else
+                updateTargetMarkers()
+            end
+        end)
+    local refreshMarkerMode=settingsDropdown(navigationPage,"Target selection",17,-421,523,{
+        {value="nearest",label="Closest enemy (when measurable)"},
+        {value="all",label="All relevant enemies"},
+    },function() return db.questTargetMarkerMode or "nearest" end,function(v)
+        db.questTargetMarkerMode=v
+        updateTargetMarkers()
+    end,true)
+    local markerHint=fontString(navigationPage,10,COLORS.muted)
+    markerHint:SetPoint("TOPLEFT",navigationPage,"TOPLEFT",17,-472)
+    markerHint:SetWidth(523)
+    markerHint:SetHeight(27)
+    markerHint:SetText("Only unfinished quest targets. If distance is unavailable, Closest shows all visible matches.")
+    applyUIFont(markerHint,10)
+    -- Keep the settings window accurate if /xqmarkers is used while it is open.
+    addon.RefreshTargetMarkerSettingsUI=function()
+        if not db then return end
+        refreshMarkerToggle()
+        refreshMarkerMode()
+    end
 
     -- THEME EDITOR: the font family and all colour controls live here.
     -- Opacity stays solely under Tracker / Appearance & scale.
@@ -2209,6 +2343,9 @@ local function initialize()
         if db.navigation[k]==nil then db.navigation[k]=v end
     end
     applyTheme()
+    if addon.NativeLearning and type(addon.NativeLearning.Initialize)=="function" then
+        addon.NativeLearning:Initialize(db)
+    end
     if addon.ObjectiveGuidance and type(addon.ObjectiveGuidance.Initialize)=="function" then
         addon.ObjectiveGuidance:Initialize(db)
     end
@@ -2267,6 +2404,16 @@ SLASH_XENQUEST2="/xenquest"
 SlashCmdList.XENQUEST=function(text)
     if not db then return end
     text=(text or ""):lower():match("^%s*(.-)%s*$")
+    -- Read-only native tooltip investigation; no quest guidance or markers are changed.
+    if text=="probe" or text:match("^probe%s+") then
+        if addon.TooltipProbe then addon.TooltipProbe:HandleCommand(text:sub(6)) end
+        return
+    end
+    if text=="learn" or text:match("^learn%s+") then
+        if addon.NativeLearning then addon.NativeLearning:HandleCommand(text:sub(6)) end
+        dirty=true
+        return
+    end
     if text=="guide" or text:match("^guide%s+") then
         local guidance=addon.ObjectiveGuidance
         if guidance and type(guidance.HandleCommand)=="function" then
@@ -2288,7 +2435,7 @@ end
 -- Classic Era and Forever expose different event sets. A single unavailable
 -- event must never prevent ADDON_LOADED from initializing the addon.
 local coreEvents={
-    "ADDON_LOADED", "PLAYER_ENTERING_WORLD", "QUEST_LOG_UPDATE",
+    "ADDON_LOADED", "PLAYER_ENTERING_WORLD", "PLAYER_LEVEL_UP", "QUEST_LOG_UPDATE",
     "QUEST_WATCH_UPDATE", "SUPER_TRACKING_CHANGED", "QUEST_ACCEPTED",
     "QUEST_REMOVED", "QUEST_TURNED_IN", "UNIT_QUEST_LOG_CHANGED",
     "PLAYER_REGEN_ENABLED", "PLAYER_LOGOUT",

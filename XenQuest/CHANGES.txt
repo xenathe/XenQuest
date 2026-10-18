@@ -1,10 +1,7 @@
-lightweight tag 640afaa178239d2f31794bb28ae9561539dc1365 v0.2.12-beta
-Author:	GitHub <noreply@github.com>
-Date:	Sat Oct 17 13:22:53 2026 +0100
-
-commit 640afaa178239d2f31794bb28ae9561539dc1365
-Author: Xenathe <ryan.smith199027@gmail.com>
-Date:   Sat Oct 17 13:22:53 2026 +0100
-
-    Add files via upload
-
+0.2.13-beta — Native-only quest guidance release candidate
+- New native quest/NPC learning and nameplate gold sword markers.
+- Corpse navigation and return-to-quest restoration.
+- Red-only high-level quest warnings and elite quest (E) hover info.
+- Protect NPC GUID / name handling against restricted values.
+- Remove QuestieDB-derived data from the public package.
+- Player-learned data stays local in SavedVariables.
