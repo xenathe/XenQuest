@@ -1,102 +1,217 @@
--- Reversible native-tracker visibility and explicit user-driven log navigation.
-local _,addon=...
-local Native={}
-addon.BlizzardUI=Native
-local roots={"ObjectiveTrackerFrame","WatchFrame","QuestWatchFrame"}
-local states={}
-local enabled,stopped=false,false
-local function call(fn,...)
-    if type(fn)~="function" then return end
-    local ok,a,b,c,d=pcall(fn,...)
-    if ok then return a,b,c,d end
+-- Reversible, deferred Blizzard tracker visual/input suppression and quest navigation.
+-- WoW Forever's objective-tracker layout can run secureexecuterange with secret
+-- aura data (including on level-up). Never call Hide/Show or install OnShow hooks
+-- on Blizzard-owned tracker frames; they can taint subsequent Blizzard layouts.
+local _, addon = ...
+local Native = {}
+addon.BlizzardUI = Native
+
+local roots = { "ObjectiveTrackerFrame", "WatchFrame", "QuestWatchFrame" }
+local savedAlpha = {}
+local savedMouse = setmetatable({}, { __mode = "k" })
+local mouseElapsed = 0
+local enabled, stopped = false, false
+local elapsed = 0
+
+local function call(fn, ...)
+    if type(fn) ~= "function" then return end
+    local ok, a, b, c, d = pcall(fn, ...)
+    if ok then return a, b, c, d end
 end
-local function invoke(fn,...)
-    if type(fn)~="function" then return false end
-    local ok,result=pcall(fn,...)
-    return ok and result~=false
+
+local function invoke(fn, ...)
+    if type(fn) ~= "function" then return false end
+    local ok, result = pcall(fn, ...)
+    return ok and result ~= false
 end
+
 local function forbidden(frame)
     if not frame then return true end
     if frame.IsForbidden then
-        local ok,value=pcall(frame.IsForbidden,frame)
-        return not ok or value
+        local ok, result = pcall(frame.IsForbidden, frame)
+        return not ok or result
     end
     return false
 end
-local function canChange(frame)
-    if forbidden(frame) then return false end
+
+local function canSetAlpha(frame)
+    if forbidden(frame) or type(frame.SetAlpha) ~= "function" then return false end
     if InCombatLockdown and InCombatLockdown() then
-        return call(frame.IsProtected,frame)==false
+        -- A protected Blizzard frame must not be changed in combat. If the
+        -- client cannot report its protection state, err on the safe side.
+        if call(frame.IsProtected, frame) ~= false then return false end
     end
     return true
 end
-local function clearOwnedTooltip(root)
-    if forbidden(GameTooltip) then return end
-    local owner=call(GameTooltip.GetOwner,GameTooltip)
-    for _=1,100 do
-        if not owner then return end
-        if owner==root then invoke(GameTooltip.Hide,GameTooltip);return end
-        if forbidden(owner) then return end
-        owner=call(owner.GetParent,owner)
-    end
+
+-- An alpha-zero frame can still own mouse hover and click targets.  In
+-- particular the Forever objective tracker may show a report/F6 tooltip even
+-- though it looks hidden.  Disable input on the *children and regions* too.
+-- This runs only from our existing deferred OnUpdate; never hook OnShow.
+local function isSecret(value)
+    if type(issecretvalue) ~= "function" then return false end
+    local ok, secret = pcall(issecretvalue, value)
+    return not ok or secret == true
 end
-local function suppress(frame,state)
-    if state.changing or not canChange(frame) then return end
-    if not state.original then
-        state.original={shown=call(frame.IsShown,frame),alpha=call(frame.GetAlpha,frame),mouse=call(frame.IsMouseEnabled,frame)}
-        state.restoreShown=state.original.shown
-    end
-    state.changing=true
-    -- Hiding the root also removes every descendant's hit regions. Do not
-    -- unregister native events, replace scripts, reparent, or alter quest watches.
-    clearOwnedTooltip(frame)
-    if call(frame.IsShown,frame) then invoke(frame.Hide,frame) end
-    state.changing=false
+
+local function safeBool(fn, target)
+    local value = call(fn, target)
+    if isSecret(value) then return nil end
+    if value == true then return true end
+    if value == false then return false end
 end
-function Native:SetSuppressed(wanted)
-    enabled=wanted and not stopped
-    for _,name in ipairs(roots) do
-        local frame=_G[name]
-        if frame and not forbidden(frame) then
-            local state=states[frame]
-            if not state then state={};states[frame]=state end
-            if enabled and not state.hooked and frame.HookScript and canChange(frame) then
-                state.hooked=invoke(frame.HookScript,frame,"OnShow",function()
-                    if enabled and not state.changing then
-                        -- Remember a native request made while suppression was active.
-                        if state.original then state.restoreShown=true end
-                        suppress(frame,state)
+
+local function safeRegions(frame, getter)
+    if type(getter) ~= "function" then return nil end
+    local ok, regions = pcall(function() return {getter(frame)} end)
+    if ok then return regions end
+end
+
+local MAX_NATIVE_REGIONS = 600
+local function descendants(root)
+    -- Process each native child independently. Disabling only the root does
+    -- not reliably suppress interactive buttons or font strings below it.
+    local nodes, seen = {root}, {[root] = true}
+    local cursor = 1
+    while cursor <= #nodes and cursor <= MAX_NATIVE_REGIONS do
+        local frame = nodes[cursor]
+        cursor = cursor + 1
+        if not forbidden(frame) then
+            local children = safeRegions(frame, frame.GetChildren)
+            local regions = safeRegions(frame, frame.GetRegions)
+            for _, group in ipairs({children or {}, regions or {}}) do
+                for _, child in ipairs(group) do
+                    if not isSecret(child) and child and not forbidden(child) and not seen[child] then
+                        seen[child] = true
+                        nodes[#nodes + 1] = child
                     end
-                end)
+                end
             end
-            if enabled then suppress(frame,state) end
         end
     end
-    if enabled then return end
-    for frame,state in pairs(states) do
-        local original=state.original
-        if original and not (InCombatLockdown and InCombatLockdown()) and canChange(frame) then
-            state.changing=true
-            local restored=true
-            if original.alpha~=nil and call(frame.GetAlpha,frame)~=original.alpha then
-                restored=invoke(frame.SetAlpha,frame,original.alpha) and restored
-            end
-            if original.mouse~=nil and call(frame.IsMouseEnabled,frame)~=original.mouse then
-                restored=invoke(frame.EnableMouse,frame,original.mouse) and restored
-            end
-            if state.restoreShown~=nil and call(frame.IsShown,frame)~=state.restoreShown then
-                restored=invoke(state.restoreShown and frame.Show or frame.Hide,frame) and restored
-            end
-            if restored then state.original=nil end
-            state.changing=false
+    return nodes
+end
+
+local function suppressInput(frame)
+    if forbidden(frame) then return end
+    local mouseState = savedMouse[frame]
+    -- Preserve the separate click/motion states. IsMouseEnabled alone loses
+    -- the important case of a frame that receives only one kind of event.
+    if type(frame.IsMouseClickEnabled) == "function"
+            and type(frame.SetMouseClickEnabled) == "function"
+            and type(frame.IsMouseMotionEnabled) == "function"
+            and type(frame.SetMouseMotionEnabled) == "function" then
+        local click = safeBool(frame.IsMouseClickEnabled, frame)
+        local motion = safeBool(frame.IsMouseMotionEnabled, frame)
+        if click == true and invoke(frame.SetMouseClickEnabled, frame, false) then
+            if not mouseState then mouseState = {}; savedMouse[frame] = mouseState end
+            mouseState.click = true
+        end
+        if motion == true and invoke(frame.SetMouseMotionEnabled, frame, false) then
+            if not mouseState then mouseState = {}; savedMouse[frame] = mouseState end
+            mouseState.motion = true
+        end
+    elseif type(frame.IsMouseEnabled) == "function"
+            and type(frame.EnableMouse) == "function"
+            and safeBool(frame.IsMouseEnabled, frame) == true then
+        if invoke(frame.EnableMouse, frame, false) then
+            if not mouseState then mouseState = {}; savedMouse[frame] = mouseState end
+            mouseState.mouse = true
         end
     end
 end
+
+local function restoreInput()
+    for frame, state in pairs(savedMouse) do
+        if not forbidden(frame) then
+            if state.click and invoke(frame.SetMouseClickEnabled, frame, true) then
+                state.click = nil
+            end
+            if state.motion and invoke(frame.SetMouseMotionEnabled, frame, true) then
+                state.motion = nil
+            end
+            if state.mouse and invoke(frame.EnableMouse, frame, true) then
+                state.mouse = nil
+            end
+            if not state.click and not state.motion and not state.mouse then
+                savedMouse[frame] = nil
+            end
+        end
+    end
+end
+
+local function updateInput()
+    -- Never mutate Blizzard-owned input regions while in combat. If the game
+    -- recreates a quest row mid-combat, let it wait for the next safe tick.
+    if InCombatLockdown and InCombatLockdown() then return end
+    if enabled then
+        for _, name in ipairs(roots) do
+            local root = _G[name]
+            if not isSecret(root) and root and not forbidden(root) then
+                for _, frame in ipairs(descendants(root)) do
+                    suppressInput(frame)
+                end
+            end
+        end
+    else
+        restoreInput()
+    end
+end
+
+function Native:SetSuppressed(wanted)
+    -- Called from quest events/refreshes and potentially inside Blizzard's own
+    -- UI update stack: change state only. Never mutate a Blizzard frame here.
+    if stopped then return end
+    enabled = not not wanted
+end
+
+function Native:UpdateVisibility(dt)
+    -- Called only from XenQuest's own OnUpdate, not from an OnShow hook or an
+    -- ObjectiveTracker event, to keep mutations out of Blizzard's secure range.
+    if stopped then return end
+    local delta = type(dt) == "number" and dt or 0
+    elapsed = elapsed + delta
+    mouseElapsed = mouseElapsed + delta
+    if elapsed < 0.25 then return end
+    elapsed = elapsed % 0.25
+
+    -- Alpha is polled every 0.25s; input regions every 0.5s. A Blizzard
+    -- quest-refresh can recreate buttons, so check for newly added children.
+    if mouseElapsed >= 0.5 then
+        mouseElapsed = mouseElapsed % 0.5
+        updateInput()
+    end
+
+    if enabled then
+        for _, name in ipairs(roots) do
+            local frame = _G[name]
+            if frame and not forbidden(frame) then
+                if savedAlpha[frame] == nil then
+                    local alpha = call(frame.GetAlpha, frame)
+                    if type(alpha) == "number" then savedAlpha[frame] = alpha end
+                end
+                if savedAlpha[frame] ~= nil and canSetAlpha(frame)
+                        and call(frame.GetAlpha, frame) ~= 0 then
+                    invoke(frame.SetAlpha, frame, 0)
+                end
+            end
+        end
+    else
+        for frame, alpha in pairs(savedAlpha) do
+            if canSetAlpha(frame) then
+                if call(frame.GetAlpha, frame) == alpha or invoke(frame.SetAlpha, frame, alpha) then
+                    savedAlpha[frame] = nil
+                end
+            end
+        end
+    end
+end
+
 function Native:Shutdown()
-    -- Logout tears down the UI; this also supplies an explicit lifecycle cleanup
-    -- entry point without changing the saved preference. Hooks become inert.
-    stopped=true
-    self:SetSuppressed(false)
+    -- Blizzard's UI is being dismantled at logout. Do not Show/Hide or alter
+    -- its frames during teardown; the next login builds fresh native frames.
+    stopped = true
+    enabled = false
 end
 
 local function logCount()

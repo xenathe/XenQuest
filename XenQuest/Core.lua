@@ -1,4 +1,4 @@
--- XenQuest 0.2.13-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
+-- XenQuest 0.2.14-beta. Standalone quest tracker for WoW Forever / Classic-era clients.
 -- Never changes the quest log or uses protected quest actions automatically.
 local ADDON_NAME,addon = ...
 local QuestItems,ItemButtons=addon.QuestItems,addon.QuestItemButtons
@@ -2484,6 +2484,8 @@ XQ:SetScript("OnEvent",function(self,event,arg)
 end)
 XQ:SetScript("OnUpdate",function(self,dt)
     if not db or not tracker then return end
+    -- Defer native tracker visual changes outside Blizzard's secure layout calls.
+    BlizzardUI:UpdateVisibility(dt)
     animateRows(dt)
     ItemButtons:Sync(tracker,db)
     elapsed=elapsed+dt
